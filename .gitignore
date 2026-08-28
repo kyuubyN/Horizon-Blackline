@@ -1,0 +1,11 @@
+.env
+.cpcache/
+.shadow-cljs/
+.lsp/
+.clj-kondo/
+target/
+node_modules/
+.tools/
+.m2/
+.datomic/
+.local-share/

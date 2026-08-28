@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+api_url="${HORIZON_API_URL:-http://127.0.0.1:8080}"
+work_dir=$(mktemp -d /tmp/horizon-blackline-rehearsal.XXXXXX)
+trap 'rm -rf "$work_dir"' EXIT
+
+echo "Checking local paper-only guard..."
+curl --silent --fail "$api_url/health" -o "$work_dir/health.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("status")=="ok" and d.get("paper-only") is True; print("Health: paper-only ok")' "$work_dir/health.json"
+
+echo "Running deterministic MOCK journey (no broker call)..."
+curl --silent --fail -X POST "$api_url/v1/demo/run" -o "$work_dir/demo.json"
+bdr_id=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["lifecycle"]["bdr-id"]); assert d["environment"]=="MOCK"; assert d["denied"]["authorization"]["result"]=="DENY"; assert d["authorized"]["authorization"]["result"]=="ALLOW"' "$work_dir/demo.json")
+
+if [[ ! "$bdr_id" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  echo "Demo returned an invalid BDR identifier." >&2
+  exit 1
+fi
+
+curl --silent --fail "$api_url/v1/bdr/$bdr_id/replay" -o "$work_dir/replay.json"
+curl --silent --fail "$api_url/v1/bdr/$bdr_id" -o "$work_dir/bdr.json"
+python3 -c 'import json,sys; replay=json.load(open(sys.argv[1])); bdr=json.load(open(sys.argv[2])); assert replay["valid?"] is True; assert bdr["state"]=="POST_MORTEM_COMPLETE"; assert bdr["sealed?"] is True; assert bdr["events"][-1]["event-type"]=="POST_MORTEM_RECORDED"; print("MOCK rehearsal: DENY + ALLOW + sealed replay ok ({} events)".format(len(bdr["events"])))' "$work_dir/replay.json" "$work_dir/bdr.json"

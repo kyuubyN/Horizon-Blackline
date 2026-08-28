@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+export JAVA_HOME="$project_root/.tools/jdk"
+export CLJ_CONFIG="$project_root/.tools/clojure-config"
+export CLJ_CACHE="$project_root/.tools/clojure-cache"
+
+curl --fail --silent --show-error http://127.0.0.1:8080/ready
+echo
+cd "$project_root"
+"$project_root/.tools/bin/clojure" -M -e '
+(require (quote [horizon-blackline.adapters.alpaca-mcp :as m]))
+(let [session (m/initialize! "http://127.0.0.1:8001/mcp")
+      names (set (map :name (m/list-tools! session)))
+      required #{"get_account_info" "place_stock_order" "place_crypto_order" "place_option_order"}]
+  (when-not (every? names required)
+    (throw (ex-info "MCP toolset is incomplete" {:missing (sort (remove names required))})))
+  (println "MCP toolset: ok"))'

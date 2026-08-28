@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+flutter="$project_root/.tools/flutter/bin/flutter"
+bundle="$project_root/desktop_flutter/build/linux/x64/release/bundle"
+backend="$bundle/backend"
+
+if [[ ! -x "$flutter" ]]; then
+  echo "Flutter local nao encontrado em .tools/flutter."
+  exit 1
+fi
+
+cd "$project_root/desktop_flutter"
+"$flutter" build linux --release
+
+rm -rf "$backend"
+mkdir -p "$backend"
+cp -a "$project_root/bin" "$backend/bin"
+cp -a "$project_root/src" "$project_root/resources" "$project_root/deps.edn" "$backend/"
+mkdir -p "$backend/.tools"
+cp -a "$project_root/.tools/jdk" "$project_root/.tools/bin" "$project_root/.tools/clojure" "$project_root/.tools/clojure-config" "$project_root/.tools/clojure-tools" "$backend/.tools/"
+cp -a "$project_root/.m2" "$backend/.m2"
+cp -a "$project_root/.env.example" "$backend/.env.example"
+
+echo "Bundle criado: $bundle"
+echo "Configure ALPACA_* no ambiente ou copie backend/.env.example para backend/.env."

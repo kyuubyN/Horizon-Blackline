@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Uso: bin/verify-audit-export <arquivo.audit.json>" >&2
+  exit 64
+fi
+
+input=$1
+if [[ ! -f "$input" ]]; then
+  echo "Arquivo nao encontrado: $input" >&2
+  exit 66
+fi
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+export JAVA_HOME="$project_root/.tools/jdk"
+export CLJ_CONFIG="$project_root/.tools/clojure-config"
+export CLJ_CACHE="$project_root/.tools/clojure-cache"
+export HORIZON_AUDIT_EXPORT_PATH="$input"
+
+cd "$project_root"
+"$project_root/.tools/bin/clojure" -M -e '
+(require (quote [jsonista.core :as json]))
+(require (quote [horizon-blackline.audit :as audit]))
+(let [input (System/getenv "HORIZON_AUDIT_EXPORT_PATH")
+      export (json/read-value (slurp input) (json/object-mapper {:decode-key-fn keyword}))
+      result (audit/verify-export export)]
+  (println (json/write-value-as-string result))
+  (when-not (:valid? result) (System/exit 1)))
+'

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+env_file="$project_root/.env"
+
+if [[ ! -f "$env_file" ]]; then
+  echo "Missing .env; copy .env.example and add Paper credentials." >&2
+  exit 1
+fi
+
+api_key=$(awk -F= '/^ALPACA_API_KEY=/{print substr($0, index($0, "=") + 1); exit}' "$env_file")
+secret_key=$(awk -F= '/^ALPACA_SECRET_KEY=/{print substr($0, index($0, "=") + 1); exit}' "$env_file")
+if [[ -z "$api_key" || -z "$secret_key" ]]; then
+  echo "Set ALPACA_API_KEY and ALPACA_SECRET_KEY for an Alpaca Paper account in .env." >&2
+  exit 1
+fi
+
+exec "$project_root/.tools/alpaca-mcp-venv/bin/alpaca-mcp-server" \
+  --env-file "$env_file" \
+  --transport streamable-http \
+  --host 127.0.0.1 \
+  --port 8001

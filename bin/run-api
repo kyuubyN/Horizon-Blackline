@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+export JAVA_HOME="$project_root/.tools/jdk"
+export CLJ_CONFIG="$project_root/.tools/clojure-config"
+export CLJ_CACHE="$project_root/.tools/clojure-cache"
+data_root="${HORIZON_DATA_DIR:-${XDG_DATA_HOME:-$project_root/.local-share}/horizon-blackline}"
+export DATOMIC_STORAGE_DIR="${DATOMIC_STORAGE_DIR:-$data_root/datomic}"
+mkdir -p "$DATOMIC_STORAGE_DIR"
+export ALPACA_PAPER_TRADE="${ALPACA_PAPER_TRADE:-true}"
+export ALPACA_MCP_URL="${ALPACA_MCP_URL:-http://127.0.0.1:8001/mcp}"
+
+if [[ -z "${ALPACA_PAPER_ACCOUNT_ID:-}" && -f "$project_root/.env" ]]; then
+  export ALPACA_PAPER_ACCOUNT_ID=$(awk -F= '/^ALPACA_PAPER_ACCOUNT_ID=/{print substr($0, index($0, "=") + 1); exit}' "$project_root/.env")
+fi
+
+if [[ -f "$project_root/.env" ]]; then
+  for official_key in HORIZON_OFFICIAL_CAMPAIGN_ENABLED HORIZON_AUTONOMY_ENABLED HORIZON_OFFICIAL_ACCOUNT_ID HORIZON_OFFICIAL_STARTING_EQUITY HORIZON_OFFICIAL_WINDOW_START HORIZON_OFFICIAL_WINDOW_END; do
+    if [[ -z "${!official_key:-}" ]]; then
+      export "$official_key"="$(awk -F= -v key="$official_key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$project_root/.env")"
+    fi
+  done
+fi
+
+if [[ "${HORIZON_BUILD_WEB_UI:-false}" == "true" ]]; then
+  "$project_root/bin/build-ui"
+fi
+cd "$project_root"
+exec "$project_root/.tools/bin/clojure" -M -m horizon-blackline.main

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+flutter="$project_root/.tools/flutter/bin/flutter"
+
+if [[ ! -x "$flutter" ]]; then
+  echo "Flutter local nao encontrado. Execute a instalacao documentada no README."
+  exit 1
+fi
+
+cleanup() {
+  if [[ -n "${api_pid:-}" ]] && kill -0 "$api_pid" 2>/dev/null; then
+    kill "$api_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if ! curl --silent --fail http://127.0.0.1:8080/health >/dev/null; then
+  "$project_root/bin/run-api" &
+  api_pid=$!
+  for _ in {1..30}; do
+    if curl --silent --fail http://127.0.0.1:8080/health >/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+fi
+
+if ! curl --silent --fail http://127.0.0.1:8080/health >/dev/null; then
+  echo "O nucleo Clojure nao ficou disponivel em 127.0.0.1:8080."
+  exit 1
+fi
+
+cd "$project_root/desktop_flutter"
+exec "$flutter" run -d linux

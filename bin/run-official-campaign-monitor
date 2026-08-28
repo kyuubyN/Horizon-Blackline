@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+api_url="${HORIZON_API_URL:-http://127.0.0.1:8080}"
+interval="${HORIZON_EQUITY_SNAPSHOT_INTERVAL_SECONDS:-60}"
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+
+if [[ -f "$project_root/.env" ]]; then
+  for official_key in HORIZON_OFFICIAL_CAMPAIGN_ENABLED HORIZON_AUTONOMY_ENABLED HORIZON_OFFICIAL_ACCOUNT_ID HORIZON_OFFICIAL_WINDOW_START HORIZON_OFFICIAL_WINDOW_END HORIZON_EQUITY_SNAPSHOT_INTERVAL_SECONDS; do
+    if [[ -z "${!official_key:-}" ]]; then
+      export "$official_key"="$(awk -F= -v key="$official_key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$project_root/.env")"
+    fi
+  done
+  interval="${HORIZON_EQUITY_SNAPSHOT_INTERVAL_SECONDS:-60}"
+fi
+
+for required in HORIZON_OFFICIAL_CAMPAIGN_ENABLED HORIZON_OFFICIAL_ACCOUNT_ID HORIZON_OFFICIAL_WINDOW_START HORIZON_OFFICIAL_WINDOW_END; do
+  if [[ -z "${!required:-}" ]]; then
+    echo "Missing $required. Export official campaign settings before starting the monitor." >&2
+    exit 64
+  fi
+done
+
+if [[ "$HORIZON_OFFICIAL_CAMPAIGN_ENABLED" != "true" ]]; then
+  echo "Official campaign monitor requires HORIZON_OFFICIAL_CAMPAIGN_ENABLED=true." >&2
+  exit 64
+fi
+
+if ! [[ "$interval" =~ ^[1-9][0-9]*$ ]]; then
+  echo "HORIZON_EQUITY_SNAPSHOT_INTERVAL_SECONDS must be a positive integer." >&2
+  exit 64
+fi
+
+to_epoch() { python3 -c 'import datetime,sys; print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()))' "$1"; }
+start_epoch=$(to_epoch "$HORIZON_OFFICIAL_WINDOW_START")
+end_epoch=$(to_epoch "$HORIZON_OFFICIAL_WINDOW_END")
+
+if (( start_epoch >= end_epoch )); then
+  echo "Official window end must be after start." >&2
+  exit 64
+fi
+
+curl --silent --show-error --fail "$api_url/health" >/dev/null
+now_epoch=$(date +%s)
+if (( now_epoch < start_epoch )); then
+  echo "Waiting for official window start: $HORIZON_OFFICIAL_WINDOW_START"
+  while (( $(date +%s) < start_epoch )); do sleep 1; done
+fi
+
+if (( $(date +%s) >= end_epoch )); then
+  echo "Official window has already ended." >&2
+  exit 64
+fi
+
+echo "Capturing official baseline (read-only account query)."
+curl --silent --show-error --fail -X POST "$api_url/v1/campaign/official/baseline"
+echo
+
+while (( $(date +%s) < end_epoch )); do
+  echo "Capturing equity snapshot at $(date -u +%FT%TZ)"
+  curl --silent --show-error --fail -X POST "$api_url/v1/campaign/official/snapshot"
+  echo
+  sleep "$interval"
+done
+
+echo "Official window ended. Final campaign state:"
+curl --silent --show-error --fail "$api_url/v1/campaign/official"
+echo
