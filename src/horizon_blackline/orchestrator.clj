@@ -18,7 +18,7 @@
             [horizon-blackline.schema :as schema]
             [horizon-blackline.workflow.core :as workflow])
   (:import (java.math RoundingMode)
-           (java.time Instant)
+           (java.time Instant Duration)
            (java.util UUID))
   (:gen-class))
 
@@ -44,6 +44,7 @@
                     (map str/upper-case)
                     vec)
     :poll-seconds (positive-long (getenv "HORIZON_ORCHESTRATOR_POLL_SECONDS") 300)
+    :monitoring-poll-seconds (positive-long (getenv "HORIZON_MONITORING_POLL_SECONDS") 30)
     :risk-budget (or (getenv "HORIZON_RISK_BUDGET_USD") "500")
     :max-symbol-weight (or (getenv "HORIZON_MAX_SYMBOL_WEIGHT") "0.05")
     :max-gross-exposure (or (getenv "HORIZON_MAX_GROSS_EXPOSURE") "0.20")
@@ -154,6 +155,9 @@
         notional (policy/decimal (:order-notional-usd config))
         quantity (when (and entry (pos? entry))
                    (safe-div notional entry 0 RoundingMode/DOWN))
+        _ (when (and entry (pos? entry) quantity (zero? quantity))
+            (log! "no viable intent:" (:symbol candidate)
+                  "share price" entry "exceeds order notional budget" notional "-> 0 shares"))
         stop-distance-pct (policy/decimal (:stop-distance-pct config))
         stop (when (and entry (pos? entry) side)
                (.setScale (if (= side :buy)
@@ -311,45 +315,132 @@
                          {:environment :PAPER :outcome reason
                           :limitations ["Terminal broker outcome observed by the orchestrator."]}))
 
-(defn- reevaluate-position! [system deps record now]
+(defn- exit-side [entry-side] (if (= entry-side :buy) :sell :buy))
+
+(defn dispatch-exit!
+  "Places a real, governed closing order when a monitored position's stop is breached. Without
+   this, reevaluate! only updated the BDR's own bookkeeping to :EXIT/:CLOSED -- the real broker
+   position stayed open indefinitely with nothing left watching it, since tick-monitoring! never
+   revisits a CLOSED/POST_MORTEM_COMPLETE record. Runs through the same governed pipeline as an
+   entry (evaluate -> authorize -> prepare -> dispatch-if-autonomy-allowed) rather than bypassing
+   it -- an exit is still capital movement and still needs an audit trail."
+  [system deps config campaign-config original-bdr-id intent exit-price now]
+  ;; :intent read back from storage round-trips through JSON (decode-key-fn keyword decodes
+  ;; keys, not values), so :side/:asset-class arrive as strings here, not keywords -- coerce
+  ;; before comparing/validating, same class of bug as the HTTP-boundary one in policy.clj.
+  (let [entry-side (let [v (:side intent)] (if (keyword? v) v (keyword (str v))))
+        asset-class (let [v (:asset-class intent)] (if (keyword? v) v (keyword (str v))))
+        side (exit-side entry-side)
+        symbol (:symbol intent)
+        record (workflow/create-bdr! system {:run-id (str "orchestrator-exit-" symbol "-" (UUID/randomUUID))
+                                              :correlation-id (str "orchestrator-exit-" original-bdr-id)
+                                              :actor "orchestrator"})
+        bdr-id (:bdr-id record)
+        exit-intent (schema/assert-valid!
+                     schema/trade-intent
+                     {:intent-id (str (UUID/randomUUID)) :bdr-id bdr-id
+                      :asset-class asset-class :symbol symbol
+                      :side side :order-type :market
+                      :quantity (:quantity intent)
+                      :entry-price (str exit-price) :stop-price (str exit-price)
+                      :requested-risk-budget (:risk-budget config)
+                      :as-of (str now) :evidence-refs []})
+        account (account-snapshot! deps now)
+        {:keys [snapshot valid?]} (build-risk-snapshot deps account symbol side
+                                                        (:quantity exit-intent) (str exit-price) now)
+        bundle (policy-bundle config)
+        evaluation (policy/evaluate {:intent exit-intent :snapshot snapshot :policy bundle
+                                     :frozen? (store/frozen? (:store system))
+                                     :evidence-valid? true :critics-complete? true
+                                     :snapshot-valid? valid? :policy-active? true})]
+    (workflow/append! system bdr-id
+                      {:event-type :EVIDENCE_CAPTURED :actor "evidence-service"
+                       :payload-schema "evidence_envelope@1"
+                       :payload {:source-uri (str "alpaca://stock/latest-quote/" symbol)
+                                 :source-type :alpaca
+                                 :content-hash (str "sha256:" (bdr/sha256 (canonical/encode {:price (str exit-price)})))
+                                 :observed-at (str now) :ingested-at (str now)
+                                 :valid-to (str (.plus now (Duration/ofMinutes 1)))
+                                 :confidence 1.0}})
+    (workflow/challenge! system bdr-id
+                         {:critics [{:critic-id "risk-management-exit" :severity :none :complete true
+                                     :note (str "deterministic stop-breach auto-exit for " original-bdr-id)}]})
+    (let [authorization (workflow/authorization! system {:bdr-id bdr-id :intent exit-intent
+                                                          :policy-bundle-id "orchestrator-exit-policy@1"
+                                                          :ttl-seconds 120 :evaluation evaluation})]
+      (if (= :ALLOW (:result evaluation))
+        (let [execution (workflow/prepare-execution!
+                         system {:authorization-id (:authorization-id authorization)
+                                 :intent exit-intent
+                                 :idempotency-key (str "orchestrator-exit-" bdr-id)
+                                 :paper? (:paper? config)})]
+          (if (campaign/autonomy-allowed? system campaign-config now)
+            (do (log! "dispatching EXIT" symbol bdr-id)
+                (dispatcher/dispatch! system (:execution-id execution)
+                                      {:mcp-url (:mcp-url deps) :paper-account-id (:paper-account-id deps)
+                                       :initialize! (:initialize! deps) :list-tools! (:list-tools! deps)
+                                       :call-tool! (:call-tool! deps)})
+                {:bdr-id bdr-id :dispatched? true})
+            (do (log! "EXIT authorized but held (autonomy/campaign gate inactive):" symbol bdr-id)
+                {:bdr-id bdr-id :dispatched? false})))
+        (do (log! "EXIT not authorized:" symbol bdr-id (:result evaluation) (:reason-codes evaluation))
+            {:bdr-id bdr-id :dispatched? false :denied? true})))))
+
+(defn- reevaluate-position! [system deps config campaign-config record now]
   (if-let [execution (orchestrator-execution system (:bdr-id record))]
     (let [intent (:intent execution)
+          side (if (keyword? (:side intent)) (:side intent) (keyword (str (:side intent))))
           quote (market/latest-stock-quote! (mcp-deps deps now) (:symbol intent))
-          price (some-> (get-in quote [:data :quotes (keyword (:symbol intent)) :bp]) str bigdec)
+          quotes (get-in quote [:data :quotes (keyword (:symbol intent))])
+          ;; Exiting a long means selling at the bid; exiting a short means buying back at the
+          ;; ask -- checking bid for both (the original code) made the short-side stop never
+          ;; trigger correctly.
+          price (some-> (get quotes (if (= side :buy) :bp :ap)) str bigdec)
           stop (bigdec (:stop-price intent))
-          decision (if (and price (<= price stop)) :EXIT :HOLD)]
+          breached? (and price (if (= side :buy) (<= price stop) (>= price stop)))
+          decision (if breached? :EXIT :HOLD)]
       (workflow/reevaluate! system (:bdr-id record)
                             {:decision decision
                              :trigger (str "orchestrator:price=" price ":stop=" stop)
                              :environment :PAPER})
       (when (= decision :EXIT)
-        (workflow/post-mortem! system (:bdr-id record)
-                               {:environment :PAPER
-                                :outcome (str "auto-exit: price " price " breached stop " stop)
-                                :limitations ["Deterministic stop-based exit; no discretionary judgment."]})))
+        (let [exit-result (try
+                            (dispatch-exit! system deps config campaign-config
+                                            (:bdr-id record) intent price now)
+                            (catch Exception e
+                              (log! "EXIT dispatch failed:" (:bdr-id record) (describe-exception e))
+                              {:error (describe-exception e)}))]
+          (workflow/post-mortem! system (:bdr-id record)
+                                 {:environment :PAPER
+                                  :outcome (str "auto-exit: price " price " breached stop " stop
+                                                "; closing-bdr=" (:bdr-id exit-result)
+                                                "; dispatched?=" (boolean (:dispatched? exit-result)))
+                                  :limitations ["Deterministic stop-based exit; no discretionary judgment."
+                                                "The closing order is tracked as its own BDR, not this one."]}))))
     (log! "no intent found to reevaluate" (:bdr-id record))))
 
-(defn- monitor-record! [system deps record now]
+(defn- monitor-record! [system deps config campaign-config record now]
   (case (:state record)
     :SUBMITTED (observe-submitted! system deps record)
     :UNKNOWN (reconcile-unknown! system deps record)
     :FILLED (workflow/start-monitoring! system (:bdr-id record))
-    :MONITORING (reevaluate-position! system deps record now)
+    :MONITORING (reevaluate-position! system deps config campaign-config record now)
     :CANCELED (close-terminal! system record "broker:canceled")
     :REJECTED (close-terminal! system record "broker:rejected")
     nil))
 
 (defn tick-monitoring!
-  ([system now] (tick-monitoring! system (default-deps) now))
-  ([system deps now]
+  ([system now] (tick-monitoring! system (default-deps) (config) (campaign/config) now))
+  ([system deps now] (tick-monitoring! system deps (config) (campaign/config) now))
+  ([system deps config campaign-config now]
    (if (store/frozen? (:store system))
      (do (log! "system frozen; skipping monitoring tick") {:frozen? true})
-     (let [records (filter (comp #{:SUBMITTED :UNKNOWN :FILLED :MONITORING :CANCELED :REJECTED} :state)
-                            (store/list-records (:store system)))]
+     (let [records (store/list-records-by-state (:store system)
+                                                 [:SUBMITTED :UNKNOWN :FILLED :MONITORING :CANCELED :REJECTED])]
        {:frozen? false
         :results (doall
                   (map (fn [record]
-                         (try (monitor-record! system deps record now)
+                         (try (monitor-record! system deps config campaign-config record now)
                               {:bdr-id (:bdr-id record) :state (:state record)}
                               (catch Exception e
                                 (log! "monitor tick failed:" (:bdr-id record) (describe-exception e))
@@ -360,11 +451,24 @@
   (let [system (workflow/new-system)
         cfg (config)
         deps (default-deps)]
-    (log! "watchlist:" (:watchlist cfg) "poll-seconds:" (:poll-seconds cfg))
+    (log! "watchlist:" (:watchlist cfg) "poll-seconds:" (:poll-seconds cfg)
+          "monitoring-poll-seconds:" (:monitoring-poll-seconds cfg))
+    ;; Stop-loss monitoring dispatches real exit orders, so it must not be starved by
+    ;; per-symbol LLM/ProofRay latency in the discovery tick -- runs on its own faster thread.
+    (let [monitoring-thread (Thread.
+                              (fn []
+                                (while true
+                                  (try
+                                    (tick-monitoring! system deps cfg (campaign/config) (Instant/now))
+                                    (catch Exception e
+                                      (log! "monitoring tick cycle failed:" (describe-exception e))))
+                                  (Thread/sleep (* 1000 (:monitoring-poll-seconds cfg))))))]
+      (.setDaemon monitoring-thread true)
+      (.setName monitoring-thread "orchestrator-monitoring-loop")
+      (.start monitoring-thread))
     (while true
       (try
         (tick! system deps cfg (campaign/config) (Instant/now))
-        (tick-monitoring! system deps (Instant/now))
         (catch Exception e
           (log! "tick cycle failed:" (describe-exception e))))
       (Thread/sleep (* 1000 (:poll-seconds cfg))))))

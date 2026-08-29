@@ -35,19 +35,20 @@ class _DashboardPageState extends State<DashboardPage> {
   void dispose() {
     _searchController.dispose();
     _backend.dispose();
+    widget.api.close();
     super.dispose();
   }
 
   Future<_DashboardData> _load() async {
     await _backend.ensureAvailable();
     final results = await Future.wait([
-      widget.api.health(),
-      widget.api.ready(),
-      widget.api.system(),
-      widget.api.bdrs(),
-      widget.api.agents(),
-      widget.api.metrics(),
-      widget.api.officialCampaign(),
+      widget.api.health().catchError((_) => <String, dynamic>{}),
+      widget.api.ready().catchError((_) => <String, dynamic>{}),
+      widget.api.system().catchError((_) => <String, dynamic>{}),
+      widget.api.bdrs().catchError((_) => <BdrSummary>[]),
+      widget.api.agents().catchError((_) => <String, dynamic>{}),
+      widget.api.metrics().catchError((_) => <String, dynamic>{}),
+      widget.api.officialCampaign().catchError((_) => <String, dynamic>{}),
     ]);
     return _DashboardData(
       health: results[0] as Map<String, dynamic>,
@@ -587,7 +588,11 @@ class _Console extends StatelessWidget {
                               final bdr = filteredBdrs[index];
                               return ListTile(
                                 leading: CircleAvatar(
-                                  child: Text(bdr.symbol.substring(0, 1)),
+                                  child: Text(
+                                    bdr.symbol.isNotEmpty
+                                        ? bdr.symbol[0]
+                                        : '?',
+                                  ),
                                 ),
                                 title: Text('${bdr.symbol} · ${bdr.side}'),
                                 subtitle: Text('${bdr.strategy}\n${bdr.id}'),
@@ -1029,9 +1034,9 @@ class _CampaignLedger extends StatelessWidget {
         const Text('Ledger de equity', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
         const SizedBox(height: 16),
         Wrap(spacing: 18, runSpacing: 18, children: [
-          _CampaignMetric(label: 'Baseline', value: 'US$${pnl['baseline-equity']}'),
-          _CampaignMetric(label: 'Equity atual', value: 'US$${pnl['latest-equity']}'),
-          _CampaignMetric(label: 'P&L', value: 'US$${pnl['pnl']}'),
+          _CampaignMetric(label: 'Baseline', value: 'US\$${pnl['baseline-equity']}'),
+          _CampaignMetric(label: 'Equity atual', value: 'US\$${pnl['latest-equity']}'),
+          _CampaignMetric(label: 'P&L', value: 'US\$${pnl['pnl']}'),
           _CampaignMetric(label: 'Snapshots', value: '${pnl['snapshot-count']}'),
         ]),
       ]),

@@ -25,11 +25,16 @@
 
 (declare encode)
 
+(defn- key-name [k]
+  (cond (keyword? k) (name k)
+        (string? k) k
+        :else (str k)))
+
 (defn- encode-map [m]
   (str "{"
        (->> m
             (sort-by (comp str key))
-            (map (fn [[k v]] (str (escape-string (name k)) ":" (encode v))))
+            (map (fn [[k v]] (str (escape-string (key-name k)) ":" (encode v))))
             (str/join ","))
        "}"))
 
@@ -46,6 +51,9 @@
                         (throw (ex-info "Non-finite canonical JSON number" {:value value})))
                       (.toPlainString (java.math.BigDecimal/valueOf number)))
     (map? value) (encode-map value)
+    ;; Sets have no inherent order -- encode each element first, then sort the resulting JSON
+    ;; strings so the overall encoding stays deterministic regardless of element type.
+    (set? value) (str "[" (str/join "," (sort (map encode value))) "]")
     (sequential? value) (str "[" (str/join "," (map encode value)) "]")
     :else (throw (ex-info "Unsupported canonical JSON value"
                           {:value value :type (type value)}))))

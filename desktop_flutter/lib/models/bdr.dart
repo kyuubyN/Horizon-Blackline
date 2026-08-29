@@ -28,7 +28,7 @@ class BdrSummary {
         '',
     intent: _map(json['intent']).isNotEmpty
         ? _map(json['intent'])
-        : <String, dynamic>{'symbol': _symbolFromEvents(json)},
+        : _intentFromEvents(json),
   );
 
   String get symbol => intent['symbol']?.toString() ?? '—';
@@ -61,7 +61,7 @@ class BdrDetail extends BdrSummary {
         '',
     intent: _map(json['intent']).isNotEmpty
         ? _map(json['intent'])
-        : <String, dynamic>{'symbol': _symbolFromEvents(json)},
+        : _intentFromEvents(json),
     events: (json['events'] as List<dynamic>? ?? const [])
         .whereType<Map>()
         .map((event) => BdrEvent.fromJson(Map<String, dynamic>.from(event)))
@@ -89,6 +89,27 @@ class BdrEvent {
 
 Map<String, dynamic> _map(Object? value) =>
     value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
+
+/// Falls back to whatever the event history carries. The backend does not
+/// currently persist :side on any event payload (only :input-hash of the
+/// intent survives on AUTHORIZATION_ISSUED), so this stays '—' today — kept
+/// forward-compatible for when a payload does carry :side or a nested
+/// :intent.
+Map<String, dynamic> _intentFromEvents(Map<String, dynamic> json) {
+  final result = <String, dynamic>{'symbol': _symbolFromEvents(json)};
+  final events = json['events'];
+  if (events is! List) return result;
+  for (final rawEvent in events) {
+    if (rawEvent is! Map) continue;
+    final payload = _map(rawEvent['payload']);
+    final side = _map(payload['intent'])['side'] ?? payload['side'];
+    if (side != null) {
+      result['side'] = side;
+      break;
+    }
+  }
+  return result;
+}
 
 String _symbolFromEvents(Map<String, dynamic> json) {
   final events = json['events'];

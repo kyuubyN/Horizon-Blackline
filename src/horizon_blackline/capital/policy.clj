@@ -14,10 +14,11 @@
   (and (string? value) (pos? (decimal value))))
 
 (defn calculate-loss-at-stop [{:keys [side quantity entry-price stop-price]}]
-  (let [q (decimal quantity)
+  (let [side-kw (if (keyword? side) side (keyword (str side)))
+        q (decimal quantity)
         entry (decimal entry-price)
         stop (decimal stop-price)
-        distance (if (= side :buy) (- entry stop) (- stop entry))]
+        distance (if (= side-kw :buy) (- entry stop) (- stop entry))]
     (.multiply q (max 0M distance))))
 
 (defn evaluate

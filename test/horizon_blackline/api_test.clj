@@ -46,6 +46,25 @@
     (is (= 422 (:status malformed-evidence)))
     (is (= 422 (:status dispatch)))))
 
+(deftest non-uuid-path-param-is-a-400-not-a-500
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "api-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        app (main/make-app system)
+        response (app (request :get "/v1/bdr/not-a-uuid" nil))]
+    (is (= 400 (:status response)))
+    (is (= "invalid_request" (:error (json/read-value (:body response) mapper))))))
+
+(deftest schema-validation-failure-details-are-json-serializable
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "api-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        app (main/make-app system)
+        malformed-intent (app (request :post "/v1/authorizations" "{\"intent\":{\"symbol\":\"AAPL\"}}"))
+        body (json/read-value (:body malformed-intent) mapper)]
+    (is (= 422 (:status malformed-intent)))
+    (is (map? (get-in body [:details :errors])))))
+
 (deftest unfreeze-requires-explicit-confirmation-and-then-clears-the-freeze
   (let [system {:store (store/new-store {:storage-dir :mem
                                          :system (str "api-" (UUID/randomUUID))
@@ -61,6 +80,62 @@
     (is (= true (:frozen? (json/read-value (:body still-frozen) mapper))))
     (is (= 200 (:status unfrozen)))
     (is (= false (:frozen? (json/read-value (:body final-status) mapper))))))
+
+(deftest wrap-auth-is-a-no-op-when-no-token-is-configured
+  (let [handler (fn [_] {:status 200 :body "ok"})
+        wrapped (main/wrap-auth handler "")]
+    (is (= 200 (:status (wrapped (request :get "/v1/system" nil)))))))
+
+(deftest wrap-auth-blocks-protected-routes-without-a-matching-bearer-token
+  (let [handler (fn [_] {:status 200 :body "ok"})
+        wrapped (main/wrap-auth handler "s3cr3t")]
+    (is (= 200 (:status (wrapped (request :get "/health" nil))))
+        "health/ready must stay reachable even when auth is configured")
+    (is (= 401 (:status (wrapped (assoc (request :get "/v1/system" nil) :headers {})))))
+    (is (= 401 (:status (wrapped (assoc (request :get "/v1/system" nil)
+                                        :headers {"authorization" "Bearer wrong"})))))
+    (is (= 200 (:status (wrapped (assoc (request :get "/v1/system" nil)
+                                        :headers {"authorization" "Bearer s3cr3t"})))))))
+
+(deftest authorization-cannot-be-forged-by-claiming-evidence-and-critics-without-posting-them
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "forge-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        app (main/make-app system)
+        run-id (str "forge-" (UUID/randomUUID))
+        created (app (request :post "/v1/bdr" (json/write-value-as-string {:run-id run-id :correlation-id run-id :actor "attacker"})))
+        bdr-id (:bdr-id (json/read-value (:body created) mapper))
+        ;; Minimal-effort forgery: only do the one step required to even reach :CHALLENGED
+        ;; (an empty critique bundle -- authorization! requires that state, nothing else checks
+        ;; what's inside it), then never POST real evidence, but still claim evidence-valid?
+        ;; true and hand over a fabricated risk budget large enough that any loss would clear it.
+        _ (app (request :post (str "/v1/bdr/" bdr-id "/challenge")
+                        (json/write-value-as-string {:critics []})))
+        forged (app (request :post "/v1/authorizations"
+                             (json/write-value-as-string
+                              {:bdr-id bdr-id
+                               :policy-bundle-id "forged-policy@1"
+                               :intent {:intent-id (str (UUID/randomUUID)) :bdr-id bdr-id :asset-class "stock"
+                                        :symbol "AAPL" :side "buy" :order-type "limit"
+                                        :quantity "1000" :entry-price "100" :stop-price "1"
+                                        :requested-risk-budget "999999999" :as-of "2026-08-28T12:00:00Z"
+                                        :evidence-refs []}
+                               :snapshot {:account-id "X" :equity "100000" :buying-power "100000"
+                                          :post-trade-symbol-weight "0.01" :post-trade-gross-exposure "0.01"
+                                          :estimated-participation "0.01" :daily-drawdown "0.0"
+                                          :as-of "2026-08-28T12:00:00Z" :source-digest "forged"}
+                               :policy {:limits {:remaining-risk-budget "999999999"
+                                                 :max-symbol-weight "1" :max-gross-exposure "1"
+                                                 :max-adv-participation "1" :hard-drawdown-limit "1"}}
+                               :evidence-valid? true
+                               :critics-complete? true
+                               :snapshot-valid? true
+                               :policy-active? true})))
+        body (json/read-value (:body forged) mapper)]
+    (is (= 201 (:status forged)) "the request itself is well-formed, just not authorized")
+    (is (= "DENY" (get-in body [:result])))
+    (is (some #{"EVIDENCE_INVALID" "CRITIC_INCOMPLETE"} (map name (get-in body [:reason-codes])))
+        "must be denied for missing real evidence/critique, not silently trust the claimed booleans")))
 
 (deftest json-intent-enums-are-normalized-at-the-api-boundary
   (is (= {:asset-class :stock :side :buy :order-type :limit}

@@ -9,6 +9,11 @@ WorkingDirectory=/opt/horizon-blackline
 ExecStart=/opt/horizon-blackline/bin/run-proofray
 Restart=on-failure
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/horizon-blackline %h/.config
 
 [Install]
 WantedBy=multi-user.target

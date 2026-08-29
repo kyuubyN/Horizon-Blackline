@@ -11,6 +11,7 @@ if [[ ! -f "$input" ]]; then
   echo "Arquivo nao encontrado: $input" >&2
   exit 66
 fi
+input=$(realpath "$input")
 
 project_root=$(cd "$(dirname "$0")/.." && pwd)
 export JAVA_HOME="$project_root/.tools/jdk"

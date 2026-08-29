@@ -10,10 +10,11 @@ class AuditExport {
     String? directory,
   }) async {
     final configured = Platform.environment['HORIZON_EXPORT_DIR'];
-    final base =
-        directory ??
-        configured ??
-        '${Platform.environment['HOME'] ?? Directory.current.path}/Documents/Horizon Blackline';
+    final home =
+        Platform.environment['HOME'] ??
+        (Platform.isWindows ? Platform.environment['USERPROFILE'] : null) ??
+        Directory.current.path;
+    final base = directory ?? configured ?? '$home/Documents/Horizon Blackline';
     final targetDirectory = await Directory(base).create(recursive: true);
     final safeId = bdrId.replaceAll(RegExp(r'[^a-zA-Z0-9-]'), '_');
     final stamp = DateTime.now().toUtc().microsecondsSinceEpoch;

@@ -52,35 +52,77 @@
     (try (handler request)
          (catch clojure.lang.ExceptionInfo e
            (response 422 {:error (.getMessage e) :details (ex-data e)}))
+         (catch IllegalArgumentException e
+           (response 400 {:error "invalid_request" :message (.getMessage e)}))
          (catch Exception _ (response 500 {:error "internal_error"})))))
+
+(def ^:private public-uris #{"/health" "/ready"})
+
+(defn- constant-time-eq? [a b]
+  (java.security.MessageDigest/isEqual
+   (.getBytes (str a) java.nio.charset.StandardCharsets/UTF_8)
+   (.getBytes (str b) java.nio.charset.StandardCharsets/UTF_8)))
+
+(defn wrap-auth
+  "No-op when HORIZON_API_AUTH_TOKEN is unset/blank (default local/dev posture, matching the
+   README's stated localhost-only threat model). Set it to require a matching Bearer token on
+   every route except /health and /ready -- worth turning on for any deployment where the
+   loopback boundary alone isn't a strong enough guarantee (containers, multi-user hosts,
+   anything reachable via a reverse proxy)."
+  [handler expected-token]
+  (if (clojure.string/blank? expected-token)
+    handler
+    (fn [request]
+      (if (contains? public-uris (:uri request))
+        (handler request)
+        (let [header (get-in request [:headers "authorization"])
+              token (when (and header (.startsWith header "Bearer ")) (subs header 7))]
+          (if (and token (constant-time-eq? token expected-token))
+            (handler request)
+            (response 401 {:error "unauthorized"})))))))
+
+;; A sealed record is immutable, so its verify result can never change once computed -- cache it
+;; keyed by bdr-id+seal to avoid replaying the full SHA-256 hash chain on every /v1/metrics poll.
+;; Unsealed records are re-verified every time since their event log can still grow.
+(def ^:private verify-cache (atom {}))
+
+(defn- cached-verify [record]
+  (if (:sealed? record)
+    (let [cache-key [(:bdr-id record) (:seal record)]]
+      (if-some [cached (get @verify-cache cache-key)]
+        cached
+        (let [result (bdr/verify record)]
+          (swap! verify-cache assoc cache-key result)
+          result)))
+    (bdr/verify record)))
 
 (defn system-metrics [system]
   (let [records (store/list-records (:store system))]
     {:bdr-total (count records)
      :events-total (reduce + 0 (map #(count (:events %)) records))
      :sealed-total (count (filter :sealed? records))
-     :replay-valid-total (count (filter bdr/verify records))
-     :replay-invalid-total (count (remove bdr/verify records))
+     :replay-valid-total (count (filter cached-verify records))
+     :replay-invalid-total (count (remove cached-verify records))
      :states (frequencies (map :state records))}))
 
 (defn audit-export [record]
   {:format "horizon-blackline/audit-export@1"
    :exported-at (str (java.time.Instant/now))
    :bdr record
-   :replay {:valid? (bdr/verify record)
+   :replay {:valid? (cached-verify record)
             :event-count (count (:events record))
             :seal (:seal record)}})
 
 (defn official-campaign-view [system]
   (let [config (campaign/config)
         status (campaign/status config (java.time.Instant/now))
-        stored (store/get-campaign (:store system) campaign/campaign-id)]
+        summary (campaign/pnl-summary system)]
     (cond-> status
-      stored (assoc :baseline-captured? true
-                    :pnl (campaign/pnl stored)))))
+      summary (assoc :baseline-captured? true :pnl summary))))
 
 (defn make-app [system]
-  (exception-response
+  (wrap-auth
+   (exception-response
    (ring/ring-handler
     (ring/router
      [["/health" {:get (fn [_] (response 200 {:status "ok" :paper-only true}))}]
@@ -123,7 +165,7 @@
       ["/v1/bdr/:id/replay" {:get (fn [request]
                                      (if-let [record (store/get-record (:store system) (get-in request [:path-params :id]))]
                                        (response 200 {:bdr-id (:bdr-id record)
-                                                      :valid? (bdr/verify record)
+                                                      :valid? (cached-verify record)
                                                       :events (:events record)})
                                        (response 404 {:error "bdr_not_found"})))}]
       ["/v1/bdr/:id/export" {:get (fn [request]
@@ -166,14 +208,30 @@
                                                                      (get-in request [:path-params :id])
                                                                      (:reason (json-body request)))))}]
       ["/v1/capital/evaluate" {:post (fn [request]
-                                        (response 200 (policy/evaluate (json-body request))))}]
+                                        (response 200 (policy/evaluate
+                                                       (update (json-body request) :intent normalize-intent))))}]
       ["/v1/demo/run" {:post (fn [_] (response 201 (demo/run-demo! system)))}]
-      ["/v1/authorizations" {:post (fn [request]
-                                      (let [command (update (json-body request) :intent normalize-intent)]
-                                        (schema/assert-valid! schema/trade-intent (:intent command))
-                                        (response 201 (workflow/authorization!
-                                                       system
-                                                       (assoc command :evaluation (policy/evaluate command))))))}]
+      ["/v1/authorizations"
+       {:post (fn [request]
+                (let [command (update (json-body request) :intent normalize-intent)]
+                  (schema/assert-valid! schema/trade-intent (:intent command))
+                  ;; evidence-valid?/critics-complete? are derived from the BDR's own real event
+                  ;; history, never trusted from the request body -- a client that never called
+                  ;; POST .../evidence or .../challenge cannot simply assert "true" and forge an
+                  ;; authorization. (:snapshot/:policy remain caller-supplied for now: the
+                  ;; desktop app has no live account-snapshot capture wired into this dialog yet.)
+                  (let [record (store/get-record (:store system) (:bdr-id command))
+                        events (:events record)
+                        evidence-valid? (boolean (some #(= :EVIDENCE_CAPTURED (:event-type %)) events))
+                        critique-event (some #(when (= :CRITIQUE_BUNDLE_COMPLETED (:event-type %)) %) events)
+                        critics-complete? (boolean (and critique-event
+                                                        (every? :complete (get-in critique-event [:payload :critics]))))
+                        command (-> command
+                                    (assoc :evidence-valid? evidence-valid?)
+                                    (assoc :critics-complete? critics-complete?))]
+                    (response 201 (workflow/authorization!
+                                   system
+                                   (assoc command :evaluation (policy/evaluate command)))))))}]
       ["/v1/authorizations/:id" {:get (fn [request]
                                          (if-let [authorization (store/get-authorization (:store system)
                                                                                           (get-in request [:path-params :id]))]
@@ -232,7 +290,8 @@
                 (let [{:keys [actor reason operator-confirmation]} (json-body request)]
                   (when-not (= "UNFREEZE" operator-confirmation)
                     (throw (ex-info "Explicit unfreeze confirmation is required" {:reason-code :SYSTEM_FROZEN})))
-                  (response 200 (workflow/unfreeze! system actor reason))))}]]))))
+                  (response 200 (workflow/unfreeze! system actor reason))))}]])))
+   (System/getenv "HORIZON_API_AUTH_TOKEN")))
 
 (def app (delay (make-app @system)))
 
@@ -247,16 +306,28 @@
       (if (empty? (:watchlist cfg))
         (println "[main] HORIZON_WATCHLIST empty; orchestrator loop not started")
         (let [deps (orchestrator/default-deps)
+              ;; Stop-loss monitoring dispatches real exit orders, so it runs on its own faster
+              ;; daemon thread rather than being starved by per-symbol LLM/ProofRay latency in tick!.
+              monitoring-thread (Thread.
+                                 (fn []
+                                   (while true
+                                     (try
+                                       (orchestrator/tick-monitoring! @system deps cfg (campaign/config) (java.time.Instant/now))
+                                       (catch Exception e
+                                         (println "[main] orchestrator monitoring tick failed:" (.getMessage e))))
+                                     (Thread/sleep (* 1000 (:monitoring-poll-seconds cfg))))))
               thread (Thread.
                       (fn []
                         (println "[main] orchestrator loop starting, watchlist:" (:watchlist cfg))
                         (while true
                           (try
                             (orchestrator/tick! @system deps cfg (campaign/config) (java.time.Instant/now))
-                            (orchestrator/tick-monitoring! @system deps (java.time.Instant/now))
                             (catch Exception e
                               (println "[main] orchestrator tick cycle failed:" (.getMessage e))))
                           (Thread/sleep (* 1000 (:poll-seconds cfg))))))]
+          (.setDaemon monitoring-thread true)
+          (.setName monitoring-thread "orchestrator-monitoring-loop")
+          (.start monitoring-thread)
           (.setDaemon thread true)
           (.setName thread "orchestrator-loop")
           (.start thread))))))

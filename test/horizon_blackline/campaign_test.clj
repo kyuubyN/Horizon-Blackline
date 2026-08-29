@@ -20,7 +20,13 @@
         updated (campaign/capture-snapshot! system config (assoc baseline :equity "100250" :captured-at "2026-09-01T13:30:00Z") (Instant/parse "2026-09-01T13:30:00Z"))]
     (is (= "100000" (:baseline-equity started)))
     (is (= "250" (:pnl (campaign/pnl updated))))
+    (is (= "250" (:pnl (campaign/pnl-summary system)))
+        "pnl-summary must agree with pnl despite using cheaper aggregate queries")
+    (is (= 1 (:snapshot-count (campaign/pnl-summary system))))
     (is (campaign/autonomy-allowed? system config now))))
+
+(deftest pnl-summary-is-nil-before-any-baseline-is-captured
+  (is (nil? (campaign/pnl-summary (system)))))
 
 (deftest campaign-fails-closed-for-wrong-equity-or-outside-window
   (let [system (system)

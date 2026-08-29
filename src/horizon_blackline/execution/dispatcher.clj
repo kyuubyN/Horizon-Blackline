@@ -52,6 +52,15 @@
        (when-not (contains? tools "get_account_info")
          (throw (ex-info "MCP does not expose account validation" {:reason-code :PAPER_ENV_REQUIRED})))
        (assert-account! call-tool! session paper-account-id)
+       ;; Claim via Datomic CAS immediately before the broker call, not before the preflight
+       ;; checks above: those can legitimately fail and must leave the execution retryable at
+       ;; :SUBMISSION_PENDING, not stranded. This still closes the TOCTOU window -- only one
+       ;; concurrent dispatch! can win this transition, so two racing callers can never both
+       ;; reach call-tool! below for the same execution.
+       (try
+         (store/claim-execution! (:store system) execution-id :SUBMISSION_PENDING :DISPATCHING)
+         (catch Exception _
+           (throw (ex-info "Execution was already claimed by another dispatcher" {:execution-id execution-id}))))
        (try
          (let [receipt (call-tool! session (:mcp-tool execution)
                                    (gateway/order-arguments {:mcp-tool (:mcp-tool execution)

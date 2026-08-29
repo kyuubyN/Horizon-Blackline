@@ -8,6 +8,8 @@
 
 (def mapper (json/object-mapper {:decode-key-fn keyword}))
 
+;; Transacted monolithically at every boot -- no versioned migration framework. Known limitation;
+;; fine while schema only grows additively, but a breaking change needs one before it ships.
 (def schema
   [{:db/ident :bdr/id :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
    {:db/ident :bdr/run-id :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -89,14 +91,15 @@
                                       :system/frozen? false}]}))
        {:client client :conn conn :db-name db-name}))))
 
+(def ^:private record-pull-pattern
+  [:bdr/id :bdr/run-id :bdr/correlation-id :bdr/created-at :bdr/created-by
+   :bdr/state :bdr/sealed? :bdr/seal :bdr/sealed-at
+   {:bdr/events [:event/id :event/sequence :event/type :event/occurred-at
+                 :event/actor :event/payload-schema :event/payload-json
+                 :event/prev-hash :event/hash]}])
+
 (defn- pull-record [store bdr-id]
-  (d/pull (d/db (:conn store))
-          [:bdr/id :bdr/run-id :bdr/correlation-id :bdr/created-at :bdr/created-by
-           :bdr/state :bdr/sealed? :bdr/seal :bdr/sealed-at
-           {:bdr/events [:event/id :event/sequence :event/type :event/occurred-at
-                         :event/actor :event/payload-schema :event/payload-json
-                         :event/prev-hash :event/hash]}]
-          [:bdr/id (uuid bdr-id)]))
+  (d/pull (d/db (:conn store)) record-pull-pattern [:bdr/id (uuid bdr-id)]))
 
 (defn- event->map [event bdr-id]
   {:event-id (str (:event/id event))
@@ -110,8 +113,8 @@
    :prev-event-hash (:event/prev-hash event)
    :event-hash (:event/hash event)})
 
-(defn get-record [store bdr-id]
-  (when-let [entity (pull-record store bdr-id)]
+(defn- entity->record [entity]
+  (when entity
     {:bdr-id (str (:bdr/id entity))
      :run-id (:bdr/run-id entity)
      :correlation-id (:bdr/correlation-id entity)
@@ -126,15 +129,49 @@
                   (sort-by :sequence)
                   vec)}))
 
-(defn list-records [store]
-  (->> (d/q '[:find ?id
-              :in $
-              :where [_ :bdr/id ?id]]
-            (d/db (:conn store)))
+(defn get-record [store bdr-id]
+  (entity->record (pull-record store bdr-id)))
+
+(defn- pull-all-records
+  "Single query with an inline pull expression -- one round trip for every BDR entity instead of
+   an id query followed by N individual d/pull calls."
+  [store]
+  (->> (d/q {:query {:find [(list 'pull '?e record-pull-pattern)]
+                     :where [['?e :bdr/id]]}
+             :args [(d/db (:conn store))]})
        (map first)
-       (map #(get-record store %))
+       (map entity->record)))
+
+(defn list-records [store]
+  (->> (pull-all-records store)
        (sort-by :created-at #(compare %2 %1))
        vec))
+
+(defn list-records-by-state
+  "Filters server-side via a Datomic collection binding instead of pulling every BDR and
+   filtering in Clojure."
+  [store states]
+  (->> (d/q {:query {:find [(list 'pull '?e record-pull-pattern)]
+                     :in '[$ [?state ...]]
+                     :where [['?e :bdr/state '?state]]}
+             :args [(d/db (:conn store)) (vec states)]})
+       (map first)
+       (map entity->record)
+       (sort-by :created-at #(compare %2 %1))
+       vec))
+
+(defn head-info
+  "Cheap alternative to get-record for callers that only need the hash-chain head and event
+   count (e.g. append! computing the next event) -- avoids pulling and JSON-parsing every prior
+   event's payload just to append one more."
+  [store bdr-id]
+  (when-let [entity (d/pull (d/db (:conn store))
+                            [:bdr/sealed? :bdr/head-hash {:bdr/events [:event/id]}]
+                            [:bdr/id (uuid bdr-id)])]
+    {:bdr-id (str bdr-id)
+     :sealed? (boolean (:bdr/sealed? entity))
+     :head-hash (or (:bdr/head-hash entity) bdr/genesis-hash)
+     :event-count (count (:bdr/events entity))}))
 
 (defn create-record! [store record]
   (let [id (uuid (:bdr-id record))]
@@ -262,6 +299,17 @@
                             :execution/broker-receipt-json (json/write-value-as-string receipt mapper)}]})
     (get-execution store id)))
 
+(defn claim-execution!
+  "Atomically transitions execution status with no receipt write -- the dispatcher's claim step,
+   done via Datomic CAS *before* any broker call, so two concurrent dispatchers can never both
+   pass the guard and both place a real order for the same execution. Throws (CAS failure) if the
+   execution isn't in current-status; the caller must never proceed to the broker call on throw."
+  [store execution-id current-status next-status]
+  (let [id (uuid execution-id)]
+    (d/transact (:conn store)
+                {:tx-data [[:db/cas [:execution/id id] :execution/status current-status next-status]]})
+    (get-execution store id)))
+
 (defn frozen? [store]
   (boolean (:system/frozen?
             (d/pull (d/db (:conn store)) [:system/frozen?] [:system/id "horizon-blackline"]))))
@@ -314,6 +362,35 @@
                                           :source-digest (:equity-snapshot/source-digest snapshot)}))
                      (sort-by :captured-at)
                      vec)}))
+
+(defn campaign-summary
+  "Cheaper than get-campaign for callers that only need baseline/latest-equity/count (pnl) --
+   two small aggregate queries plus one exact-match lookup instead of pulling every historical
+   equity snapshot's full attributes."
+  [store campaign-id]
+  (let [db (d/db (:conn store))
+        campaign (d/pull db [:campaign/baseline-equity] [:campaign/id campaign-id])]
+    (when (:campaign/baseline-equity campaign)
+      (let [snapshot-count (or (ffirst (d/q {:query {:find ['(count ?s)]
+                                                      :where [['?c :campaign/id campaign-id]
+                                                              ['?c :campaign/snapshots '?s]]}
+                                              :args [db]}))
+                               0)
+            latest-captured-at (ffirst (d/q {:query {:find ['(max ?cap)]
+                                                      :where [['?c :campaign/id campaign-id]
+                                                              ['?c :campaign/snapshots '?s]
+                                                              ['?s :equity-snapshot/captured-at '?cap]]}
+                                             :args [db]}))
+            latest-equity (when latest-captured-at
+                            (ffirst (d/q {:query {:find ['?eq]
+                                                  :where [['?c :campaign/id campaign-id]
+                                                          ['?c :campaign/snapshots '?s]
+                                                          ['?s :equity-snapshot/captured-at latest-captured-at]
+                                                          ['?s :equity-snapshot/equity '?eq]]}
+                                         :args [db]})))]
+        {:baseline-equity (:campaign/baseline-equity campaign)
+         :latest-equity (or latest-equity (:campaign/baseline-equity campaign))
+         :snapshot-count snapshot-count}))))
 
 (defn create-campaign! [store campaign]
   (d/transact (:conn store)

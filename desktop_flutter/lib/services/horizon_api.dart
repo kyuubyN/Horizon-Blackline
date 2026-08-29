@@ -4,13 +4,19 @@ import 'dart:io';
 import '../models/bdr.dart';
 
 class HorizonApi {
-  HorizonApi({String? baseUrl})
+  HorizonApi({String? baseUrl, HttpClient? client})
     : baseUrl =
           baseUrl ??
           Platform.environment['HORIZON_API_URL'] ??
-          'http://127.0.0.1:8080';
+          'http://127.0.0.1:8080',
+      _client = client ?? (HttpClient()..idleTimeout = const Duration(seconds: 15));
+
+  static const _bodyTimeout = Duration(seconds: 10);
 
   final String baseUrl;
+  final HttpClient _client;
+
+  void close() => _client.close(force: true);
 
   Future<Map<String, dynamic>> health() => _get('/health');
   Future<Map<String, dynamic>> ready() => _getAllowing('/ready', {200, 503});
@@ -68,7 +74,13 @@ class HorizonApi {
 
   Future<Map<String, dynamic>> runDemo() => _post('/v1/demo/run');
   Future<void> freeze({required String actor, required String reason}) async =>
-      _post('/v1/system:freeze', {'actor': actor, 'reason': reason});
+      _post('/v1/system/freeze', {'actor': actor, 'reason': reason});
+  Future<void> unfreeze({required String actor, required String reason}) async =>
+      _post('/v1/system/unfreeze', {
+        'actor': actor,
+        'reason': reason,
+        'operator-confirmation': 'UNFREEZE',
+      });
   Future<Map<String, dynamic>> startMonitoring(String bdrId) =>
       _post('/v1/bdr/$bdrId/monitor');
   Future<Map<String, dynamic>> reevaluate(
@@ -94,80 +106,52 @@ class HorizonApi {
   });
 
   Future<Map<String, dynamic>> _get(String path) async {
-    final client = HttpClient();
-    try {
-      final request = await client.getUrl(Uri.parse('$baseUrl$path'));
-      final response = await request.close().timeout(
-        const Duration(seconds: 5),
-      );
-      return await _decode(response);
-    } finally {
-      client.close(force: true);
-    }
+    final request = await _client.getUrl(Uri.parse('$baseUrl$path'));
+    final response = await request.close().timeout(const Duration(seconds: 5));
+    return _decode(response);
   }
 
   Future<Map<String, dynamic>> _getAllowing(
     String path,
     Set<int> allowedStatuses,
   ) async {
-    final client = HttpClient();
-    try {
-      final request = await client.getUrl(Uri.parse('$baseUrl$path'));
-      final response = await request.close().timeout(
-        const Duration(seconds: 5),
-      );
-      final text = await utf8.decoder.bind(response).join();
-      final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
-      if (!allowedStatuses.contains(response.statusCode)) {
-        throw HorizonApiException(response.statusCode, decoded.toString());
-      }
-      return Map<String, dynamic>.from(decoded as Map);
-    } finally {
-      client.close(force: true);
+    final request = await _client.getUrl(Uri.parse('$baseUrl$path'));
+    final response = await request.close().timeout(const Duration(seconds: 5));
+    final text = await utf8.decoder.bind(response).join().timeout(_bodyTimeout);
+    final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+    if (!allowedStatuses.contains(response.statusCode)) {
+      throw HorizonApiException(response.statusCode, decoded.toString());
     }
+    return Map<String, dynamic>.from(decoded as Map);
   }
 
   Future<List<dynamic>> _getList(String path) async {
-    final client = HttpClient();
-    try {
-      final request = await client.getUrl(Uri.parse('$baseUrl$path'));
-      final response = await request.close().timeout(
-        const Duration(seconds: 5),
-      );
-      final text = await utf8.decoder.bind(response).join();
-      final decoded = text.isEmpty ? const <dynamic>[] : jsonDecode(text);
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HorizonApiException(response.statusCode, decoded.toString());
-      }
-      if (decoded is! List) {
-        throw HorizonApiException(response.statusCode, 'Expected a JSON list.');
-      }
-      return decoded;
-    } finally {
-      client.close(force: true);
+    final request = await _client.getUrl(Uri.parse('$baseUrl$path'));
+    final response = await request.close().timeout(const Duration(seconds: 5));
+    final text = await utf8.decoder.bind(response).join().timeout(_bodyTimeout);
+    final decoded = text.isEmpty ? const <dynamic>[] : jsonDecode(text);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HorizonApiException(response.statusCode, decoded.toString());
     }
+    if (decoded is! List) {
+      throw HorizonApiException(response.statusCode, 'Expected a JSON list.');
+    }
+    return decoded;
   }
 
   Future<Map<String, dynamic>> _post(
     String path, [
     Map<String, dynamic> body = const {},
   ]) async {
-    final client = HttpClient();
-    try {
-      final request = await client.postUrl(Uri.parse('$baseUrl$path'));
-      request.headers.contentType = ContentType.json;
-      request.write(jsonEncode(body));
-      final response = await request.close().timeout(
-        const Duration(seconds: 10),
-      );
-      return await _decode(response);
-    } finally {
-      client.close(force: true);
-    }
+    final request = await _client.postUrl(Uri.parse('$baseUrl$path'));
+    request.headers.contentType = ContentType.json;
+    request.write(jsonEncode(body));
+    final response = await request.close().timeout(const Duration(seconds: 10));
+    return _decode(response);
   }
 
   Future<Map<String, dynamic>> _decode(HttpClientResponse response) async {
-    final text = await utf8.decoder.bind(response).join();
+    final text = await utf8.decoder.bind(response).join().timeout(_bodyTimeout);
     final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HorizonApiException(response.statusCode, decoded.toString());

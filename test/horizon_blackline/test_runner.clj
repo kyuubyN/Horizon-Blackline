@@ -15,7 +15,8 @@
             [horizon-blackline.orchestrator-test]
             [horizon-blackline.policy-test]
             [horizon-blackline.proofray-test]
-            [horizon-blackline.readiness-test])
+            [horizon-blackline.readiness-test]
+            [horizon-blackline.schema-test])
   (:gen-class))
 
 (defn -main [& _]
@@ -34,6 +35,7 @@
                                'horizon-blackline.orchestrator-test
                                'horizon-blackline.policy-test
                                'horizon-blackline.proofray-test
-                               'horizon-blackline.readiness-test)]
+                               'horizon-blackline.readiness-test
+                               'horizon-blackline.schema-test)]
     (when (pos? (+ (:fail result) (:error result)))
       (System/exit 1))))

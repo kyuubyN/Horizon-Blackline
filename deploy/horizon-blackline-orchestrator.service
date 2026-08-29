@@ -10,6 +10,11 @@ WorkingDirectory=/opt/horizon-blackline
 ExecStart=/opt/horizon-blackline/bin/run-orchestrator
 Restart=on-failure
 RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/horizon-blackline
 
 [Install]
 WantedBy=multi-user.target

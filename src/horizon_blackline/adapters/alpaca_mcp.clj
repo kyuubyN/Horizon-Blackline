@@ -14,15 +14,17 @@
 (def read-tools #{"get_account_info" "get_order_by_client_id" "get_stock_latest_quote"
                    "get_all_positions" "get_stock_bars" "get_news" "get_clock"})
 
+(def ^:private shared-client
+  (delay (-> (HttpClient/newBuilder) (.connectTimeout (Duration/ofSeconds 10)) (.build))))
+
 (defn- send-http! [{:keys [url headers body]}]
-  (let [client (HttpClient/newBuilder)
-        builder (-> (HttpRequest/newBuilder (URI/create url))
+  (let [builder (-> (HttpRequest/newBuilder (URI/create url))
                     (.timeout (Duration/ofSeconds 10))
                     (.header "Content-Type" "application/json")
                     (.header "Accept" "application/json, text/event-stream"))
         builder (reduce (fn [request [header value]] (.header request header value)) builder headers)
         request (-> builder (.POST (HttpRequest$BodyPublishers/ofString body)) (.build))
-        response (.send (.build client) request (HttpResponse$BodyHandlers/ofString))]
+        response (.send @shared-client request (HttpResponse$BodyHandlers/ofString))]
     {:status (.statusCode response)
      :headers {"mcp-session-id" (.orElse (.firstValue (.headers response) "mcp-session-id") nil)}
      :body (.body response)}))
@@ -31,6 +33,21 @@
   (when-not (<= 200 (:status response) 299)
     (throw (ex-info "MCP request failed" {:status (:status response) :body (:body response)})))
   response)
+
+(defn- sse-body? [body]
+  (let [trimmed (str/triml body)]
+    (or (str/starts-with? trimmed "event:")
+        (str/starts-with? trimmed "data:")
+        (str/starts-with? trimmed ":"))))
+
+(defn- unwrap-sse [body]
+  (if (sse-body? body)
+    (->> (str/split-lines body)
+         (filter #(str/starts-with? % "data:"))
+         (map #(subs % 5))
+         (str/join "\n")
+         str/trim)
+    body))
 
 (defn- rpc! [send! {:keys [base-url session-id]} id method params]
   (let [response (-> (send! {:url base-url
@@ -41,15 +58,7 @@
                                       (some? id) (assoc :id id)) mapper)})
                      assert-success!)]
     (if (seq (:body response))
-      (let [body (:body response)
-            json-body (if (str/starts-with? (str/triml body) "event:")
-                        (->> (str/split-lines body)
-                             (filter #(str/starts-with? % "data:"))
-                             (map #(subs % 5))
-                             (str/join "\n")
-                             str/trim)
-                        body)]
-        (json/read-value json-body mapper))
+      (json/read-value (unwrap-sse (:body response)) mapper)
       {})))
 
 (defn initialize!
@@ -63,15 +72,7 @@
                                                :capabilities {}
                                                :clientInfo {:name "horizon-blackline-gateway" :version "0.1.0"}}} mapper)})
                       assert-success!)
-         payload-body (:body response)
-         payload-json (if (str/starts-with? (str/triml payload-body) "event:")
-                        (->> (str/split-lines payload-body)
-                             (filter #(str/starts-with? % "data:"))
-                             (map #(subs % 5))
-                             (str/join "\n")
-                             str/trim)
-                        payload-body)
-         payload (json/read-value payload-json mapper)
+         payload (json/read-value (unwrap-sse (:body response)) mapper)
          session-id (get-in response [:headers "mcp-session-id"])]
      (when-not session-id
        (throw (ex-info "MCP did not return a session id" {:response payload})))

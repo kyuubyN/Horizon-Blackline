@@ -1,9 +1,14 @@
 (ns horizon-blackline.schema
-  (:require [malli.core :as m]))
+  (:require [malli.core :as m]
+            [malli.error :as me]))
 
 (def decimal-string
   [:and string? [:fn {:error/message "must be a positive decimal string"}
                   #(try (pos? (bigdec %)) (catch Exception _ false))]])
+
+(def non-negative-decimal-string
+  [:and string? [:fn {:error/message "must be a non-negative decimal string"}
+                  #(try (>= (bigdec %) 0) (catch Exception _ false))]])
 
 (def uuid-string
   [:and string? [:fn {:error/message "must be a UUID string"}
@@ -36,7 +41,7 @@
    [:post-trade-symbol-weight decimal-string]
    [:post-trade-gross-exposure decimal-string]
    [:estimated-participation decimal-string]
-   [:daily-drawdown decimal-string]
+   [:daily-drawdown non-negative-decimal-string]
    [:as-of rfc3339-utc-string]
    [:source-digest string?]])
 
@@ -53,6 +58,9 @@
 (defn valid? [schema value] (m/validate schema value))
 
 (defn assert-valid! [schema value]
-  (when-not (valid? schema value)
-    (throw (ex-info "Schema validation failed" {:schema schema :value value})))
+  (when-let [explanation (m/explain schema value)]
+    ;; ex-data must stay JSON-safe -- the raw schema/explanation can carry fn objects Jackson
+    ;; can't serialize, which previously made a 422-worthy validation failure fall through to
+    ;; main.clj's generic 500 handler.
+    (throw (ex-info "Schema validation failed" {:errors (me/humanize explanation) :value value})))
   value)

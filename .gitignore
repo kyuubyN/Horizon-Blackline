@@ -10,3 +10,5 @@ node_modules/
 .datomic/
 .local-share/
 HorizonMemory/
+.agents/
+AUDIT_REPORT.md

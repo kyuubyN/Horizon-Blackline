@@ -3,15 +3,13 @@
   (:import (java.nio.charset StandardCharsets)
            (java.security MessageDigest)
            (java.time Instant)
-           (java.util UUID)))
+           (java.util HexFormat UUID)))
 
 (def genesis-hash (apply str (repeat 64 "0")))
 
 (defn sha256 [value]
   (let [digest (MessageDigest/getInstance "SHA-256")]
-    (->> (.digest digest (.getBytes (str value) StandardCharsets/UTF_8))
-         (map #(format "%02x" (bit-and % 0xff)))
-         (apply str))))
+    (.formatHex (HexFormat/of) (.digest digest (.getBytes (str value) StandardCharsets/UTF_8)))))
 
 (defn new-record [{:keys [run-id correlation-id actor now]
                    :or {actor "system" now (Instant/now)}}]

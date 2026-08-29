@@ -20,8 +20,13 @@ cp -a "$project_root/bin" "$backend/bin"
 cp -a "$project_root/src" "$project_root/resources" "$project_root/deps.edn" "$backend/"
 mkdir -p "$backend/.tools"
 cp -a "$project_root/.tools/jdk" "$project_root/.tools/bin" "$project_root/.tools/clojure" "$project_root/.tools/clojure-config" "$project_root/.tools/clojure-tools" "$backend/.tools/"
+# .m2 ships the resolved jars themselves (the classpath cache only stores
+# paths into it), so it can't be dropped without a real uberjar/jlink build.
+# Strip anything that looks like credential/config leakage as a minimum.
 cp -a "$project_root/.m2" "$backend/.m2"
+find "$backend/.m2" \( -iname "settings.xml" -o -iname "*credentials*" -o -iname ".netrc" \) -delete
 cp -a "$project_root/.env.example" "$backend/.env.example"
 
 echo "Bundle criado: $bundle"
 echo "Configure ALPACA_* no ambiente ou copie backend/.env.example para backend/.env."
+echo "Nota: backend/.m2 bundles the resolved Maven jars (needed to run); nao contem settings.xml/credenciais apos a limpeza acima."

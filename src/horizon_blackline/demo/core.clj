@@ -70,6 +70,7 @@
                  :broker-order-id (str "mock-order-" (:execution-id execution))
                  :client-order-id (:client-order-id execution)
                  :status :NEW}
+        _ (workflow/claim-execution! system (:execution-id execution))
         submitted (workflow/submitted! system (:execution-id execution) receipt)
         filled (workflow/observe! system (:execution-id submitted)
                                   {:status :FILLED

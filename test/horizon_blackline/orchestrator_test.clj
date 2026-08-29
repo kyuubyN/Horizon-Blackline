@@ -32,14 +32,16 @@
                            :baseline-at (str now)
                            :autonomy-enabled? true}))
 
+(defn- val-of [x] (if (instance? clojure.lang.IDeref x) @x x))
+
 (defn- make-deps [{:keys [ap bp bars positions equity last-equity calls quote-error?
-                          news direction confidence]
+                          news direction confidence order-status]
                    :or {ap "100.00" bp "99.90" equity 100000 last-equity 100000
                         bars {:AAPL [{:v 1000000} {:v 1000000}]} positions []
                         news [{:headline "AAPL rallies on strong iPhone demand"
                                :summary "Sales beat estimates." :source "test-wire"
                                :created_at "2026-08-28T12:00:00Z"}]
-                        direction "buy" confidence 0.9}}]
+                        direction "buy" confidence 0.9 order-status "filled"}}]
   {:mcp-url "http://mcp.test"
    :paper-account-id "official-paper"
    :market-open! (fn [_] true)
@@ -66,7 +68,9 @@
        "get_stock_latest_quote"
        (if (and quote-error? (= (:symbols arguments) "BAD"))
          (throw (ex-info "quote unavailable" {:symbol (:symbols arguments)}))
-         {:structuredContent {:data {:quotes {(keyword (:symbols arguments)) {:ap ap :bp bp}}}}})
+         {:structuredContent {:data {:quotes {(keyword (:symbols arguments)) {:ap (val-of ap) :bp (val-of bp)}}}}})
+       "get_order_by_client_id"
+       {:structuredContent {:data {:status (val-of order-status)}}}
        "place_stock_order"
        (do (when calls (swap! calls conj arguments))
            {:content [{:type "text" :text "{\"status\":\"accepted\"}"}]})
@@ -119,6 +123,33 @@
     (is (= {:frozen? false :market-open? false} result))
     (is (empty? (store/list-records (:store system))))
     (is (empty? @calls))))
+
+(deftest stop-breach-dispatches-a-real-governed-closing-order
+  (let [system (system)
+        calls (atom [])
+        bp (atom "99.90")
+        deps (make-deps {:calls calls :bp bp})]
+    (seed-campaign! system)
+    ;; Entry: authorized and dispatched (autonomy on via seed-campaign!).
+    (orchestrator/tick! system deps cfg campaign-config now)
+    (is (= 1 (count @calls)) "entry order must have been placed")
+    ;; :SUBMITTED -> :FILLED
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)
+    (is (= :FILLED (:state (first (store/list-records (:store system))))))
+    ;; :FILLED -> :MONITORING
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)
+    (is (= :MONITORING (:state (first (store/list-records (:store system))))))
+    ;; Price now below the 2% stop under a $100.00 entry (stop = $98.00) -- must trigger a real,
+    ;; separate, governed closing order, not just an internal state flip.
+    (reset! bp "97.00")
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)
+    (let [records (store/list-records (:store system))
+          original (first (filter #(= :POST_MORTEM_COMPLETE (:state %)) records))
+          closing-order (second @calls)]
+      (is (= 2 (count @calls)) "the stop breach must place a real second broker order")
+      (is (= "sell" (:side closing-order)) "closing a long position must sell, not buy again")
+      (is (= 2 (count records)) "the exit is tracked as its own BDR, not folded into the original")
+      (is (some? original)))))
 
 (deftest one-symbol-exception-does-not-stop-others
   (let [system (system)

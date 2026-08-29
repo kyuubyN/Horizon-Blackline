@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_root=$(cd "$(dirname "$0")/.." && pwd)
 export JAVA_HOME="$project_root/.tools/jdk"
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=50.0 -XX:+UseG1GC}"
 export CLJ_CONFIG="$project_root/.tools/clojure-config"
 export CLJ_CACHE="$project_root/.tools/clojure-cache"
 data_root="${HORIZON_DATA_DIR:-${XDG_DATA_HOME:-$project_root/.local-share}/horizon-blackline}"
@@ -16,12 +17,13 @@ if [[ -z "${ALPACA_PAPER_ACCOUNT_ID:-}" && -f "$project_root/.env" ]]; then
 fi
 
 if [[ -f "$project_root/.env" ]]; then
-  for official_key in HORIZON_OFFICIAL_CAMPAIGN_ENABLED HORIZON_AUTONOMY_ENABLED HORIZON_OFFICIAL_ACCOUNT_ID HORIZON_OFFICIAL_STARTING_EQUITY HORIZON_OFFICIAL_WINDOW_START HORIZON_OFFICIAL_WINDOW_END \
-                       HORIZON_ORCHESTRATOR_EMBEDDED HORIZON_WATCHLIST HORIZON_ORCHESTRATOR_POLL_SECONDS \
+  for official_key in PORT HORIZON_OFFICIAL_CAMPAIGN_ENABLED HORIZON_AUTONOMY_ENABLED HORIZON_OFFICIAL_ACCOUNT_ID HORIZON_OFFICIAL_STARTING_EQUITY HORIZON_OFFICIAL_WINDOW_START HORIZON_OFFICIAL_WINDOW_END \
+                       HORIZON_ORCHESTRATOR_EMBEDDED HORIZON_WATCHLIST HORIZON_ORCHESTRATOR_POLL_SECONDS HORIZON_MONITORING_POLL_SECONDS \
                        HORIZON_RISK_BUDGET_USD HORIZON_MAX_SYMBOL_WEIGHT HORIZON_MAX_GROSS_EXPOSURE \
                        HORIZON_MAX_ADV_PARTICIPATION HORIZON_MAX_DRAWDOWN HORIZON_STOP_DISTANCE_PCT \
                        HORIZON_ORDER_NOTIONAL_USD HORIZON_MIN_CONFIDENCE FEATHER_API_KEY GEMINI_API_KEY \
-                       HORIZON_FEATHER_MODEL HORIZON_GEMINI_MODELS GROQ_API_KEY HORIZON_GROQ_MODEL PROOFRAY_URL; do
+                       HORIZON_FEATHER_MODEL HORIZON_GEMINI_MODELS GROQ_API_KEY HORIZON_GROQ_MODEL PROOFRAY_URL \
+                       HORIZON_API_AUTH_TOKEN; do
     if [[ -z "${!official_key:-}" ]]; then
       export "$official_key"="$(awk -F= -v key="$official_key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$project_root/.env")"
     fi

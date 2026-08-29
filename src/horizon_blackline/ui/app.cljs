@@ -4,7 +4,9 @@
 (declare start)
 
 (defn escape-html [value]
-  (-> (str value) (.replace "&" "&amp;") (.replace "<" "&lt;") (.replace ">" "&gt;")))
+  (-> (str value)
+      (.replaceAll "&" "&amp;") (.replaceAll "<" "&lt;") (.replaceAll ">" "&gt;")
+      (.replaceAll "\"" "&quot;") (.replaceAll "'" "&#39;")))
 
 (defn bdr-row [record]
   (str "<li><button class='bdr-button' data-bdr-id='" (escape-html (aget record "bdr-id")) "'><code>" (escape-html (aget record "bdr-id")) "</code></button><span>"
@@ -18,10 +20,20 @@
 (defn freeze-system []
   (when (js/confirm "Congelar novas entradas em Paper trading?")
     (let [reason (or (js/prompt "Motivo do kill switch:") "operator-request")]
-      (-> (js/fetch "/v1/system:freeze"
+      (-> (js/fetch "/v1/system/freeze"
                     #js {:method "POST"
                          :headers #js {"Content-Type" "application/json"}
                          :body (js/JSON.stringify #js {"actor" "local-operator" "reason" reason})})
+          (.then (fn [_] (start)))))))
+
+(defn unfreeze-system []
+  (when (js/confirm "Descongelar o sistema e voltar a permitir novas entradas?")
+    (let [reason (or (js/prompt "Motivo do unfreeze:") "operator-request")]
+      (-> (js/fetch "/v1/system/unfreeze"
+                    #js {:method "POST"
+                         :headers #js {"Content-Type" "application/json"}
+                         :body (js/JSON.stringify #js {"actor" "local-operator" "reason" reason
+                                                        "operator-confirmation" "UNFREEZE"})})
           (.then (fn [_] (start)))))))
 
 (defn render [health system records]
@@ -33,7 +45,10 @@
              "<span>API: " (if (= "ok" (aget health "status")) "online" "indisponível") "</span></section>"
              "<section class='freeze'><strong>Kill switch: " (if (aget system "frozen?") "ATIVO" "pronto") "</strong>"
              (when (aget system "frozen?") (str " <span>" (escape-html (aget system "reason")) "</span>"))
-             "<button id='freeze-button'>Congelar entradas</button></section>"
+             (if (aget system "frozen?")
+               "<button id='unfreeze-button'>Descongelar</button>"
+               "<button id='freeze-button'>Congelar entradas</button>")
+             "</section>"
              "<section class='grid'><article><h2>Decisão</h2><p>" (count (array-seq records)) " BDR(s) persistidos no Datomic.</p></article>"
              "<article><h2>Capital Authority</h2><p>Risco, sizing e concentração são determinísticos.</p></article>"
              "<article><h2>Execução</h2><p>O gateway usa outbox idempotente e MCP somente em paper.</p></article></section>"
@@ -46,7 +61,10 @@
                      (fn [_]
                        (.then (js/fetch "/v1/demo/run" #js {:method "POST"})
                               (fn [_] (start)))))
-  (.addEventListener (by-id "freeze-button") "click" (fn [_] (freeze-system)))
+  (when-let [button (by-id "freeze-button")]
+    (.addEventListener button "click" (fn [_] (freeze-system))))
+  (when-let [button (by-id "unfreeze-button")]
+    (.addEventListener button "click" (fn [_] (unfreeze-system))))
   (doseq [element (array-seq (.querySelectorAll js/document "[data-bdr-id]"))]
     (.addEventListener element "click"
                        (fn [event]

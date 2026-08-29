@@ -89,19 +89,24 @@
 
 (defn capture-baseline! [system campaign-config snapshot now]
   (assert-campaign! campaign-config now snapshot)
-  (when-not (= (bigdec (:expected-starting-equity campaign-config)) (bigdec (:equity snapshot)))
-    (throw (ex-info "Official campaign must begin at the configured starting equity"
-                    {:expected (:expected-starting-equity campaign-config)
-                     :actual (:equity snapshot)})))
+  ;; Idempotent on purpose: a baseline already captured is returned as-is, without re-asserting
+  ;; starting equity, so a caller (e.g. a monitor script under Restart=on-failure) that always
+  ;; re-asserts baseline on start never crash-loops on ordinary intraday equity drift. Callers can
+  ;; check GET /v1/campaign/official first to see whether a baseline already exists.
   (or (store/get-campaign (:store system) campaign-id)
-      (store/create-campaign! (:store system)
-                              {:campaign-id campaign-id
-                               :account-id (:account-id snapshot)
-                               :starts-at (str (:starts-at campaign-config))
-                               :ends-at (str (:ends-at campaign-config))
-                               :baseline-equity (:equity snapshot)
-                               :baseline-at (:captured-at snapshot)
-                               :autonomy-enabled? (:autonomy-enabled? campaign-config)})))
+      (do
+        (when-not (= (bigdec (:expected-starting-equity campaign-config)) (bigdec (:equity snapshot)))
+          (throw (ex-info "Official campaign must begin at the configured starting equity"
+                          {:expected (:expected-starting-equity campaign-config)
+                           :actual (:equity snapshot)})))
+        (store/create-campaign! (:store system)
+                                {:campaign-id campaign-id
+                                 :account-id (:account-id snapshot)
+                                 :starts-at (str (:starts-at campaign-config))
+                                 :ends-at (str (:ends-at campaign-config))
+                                 :baseline-equity (:equity snapshot)
+                                 :baseline-at (:captured-at snapshot)
+                                 :autonomy-enabled? (:autonomy-enabled? campaign-config)}))))
 
 (defn capture-snapshot! [system campaign-config snapshot now]
   (assert-campaign! campaign-config now snapshot)
@@ -118,6 +123,16 @@
          (not (store/frozen? (:store system)))
          campaign
          (= (:account-id campaign) (:account-id campaign-config)))))
+
+(defn pnl-summary
+  "Cheaper than (pnl (store/get-campaign ...)) for read-only callers that don't need every
+   historical snapshot -- e.g. the /v1/campaign/official polling route."
+  [system]
+  (when-let [summary (store/campaign-summary (:store system) campaign-id)]
+    {:baseline-equity (:baseline-equity summary)
+     :latest-equity (:latest-equity summary)
+     :pnl (str (- (bigdec (:latest-equity summary)) (bigdec (:baseline-equity summary))))
+     :snapshot-count (:snapshot-count summary)}))
 
 (defn pnl [campaign]
   (let [last-equity (or (:equity (last (:snapshots campaign))) (:baseline-equity campaign))]

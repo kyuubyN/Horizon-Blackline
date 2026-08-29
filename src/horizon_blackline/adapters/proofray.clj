@@ -13,14 +13,16 @@
 
 (def mapper (json/object-mapper {:decode-key-fn keyword}))
 
+(def ^:private shared-client
+  (delay (-> (HttpClient/newBuilder) (.connectTimeout (Duration/ofSeconds 10)) (.build))))
+
 (defn- send-http! [{:keys [url headers body]}]
-  (let [client (HttpClient/newBuilder)
-        builder (-> (HttpRequest/newBuilder (URI/create url))
+  (let [builder (-> (HttpRequest/newBuilder (URI/create url))
                     (.timeout (Duration/ofSeconds 30))
                     (.header "Content-Type" "application/json"))
         builder (reduce (fn [request [header value]] (.header request header value)) builder headers)
         request (-> builder (.POST (HttpRequest$BodyPublishers/ofString body)) (.build))
-        response (.send (.build client) request (HttpResponse$BodyHandlers/ofString))]
+        response (.send @shared-client request (HttpResponse$BodyHandlers/ofString))]
     {:status (.statusCode response) :body (.body response)}))
 
 (defn credentials-path []

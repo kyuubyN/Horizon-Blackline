@@ -44,7 +44,11 @@ curl --silent --show-error --fail "$api_url/health" >/dev/null
 now_epoch=$(date +%s)
 if (( now_epoch < start_epoch )); then
   echo "Waiting for official window start: $HORIZON_OFFICIAL_WINDOW_START"
-  while (( $(date +%s) < start_epoch )); do sleep 1; done
+  while true; do
+    remaining=$(( start_epoch - $(date +%s) ))
+    (( remaining <= 0 )) && break
+    sleep "$(( remaining < 60 ? remaining : 60 ))"
+  done
 fi
 
 if (( $(date +%s) >= end_epoch )); then
@@ -52,9 +56,18 @@ if (( $(date +%s) >= end_epoch )); then
   exit 64
 fi
 
-echo "Capturing official baseline (read-only account query)."
-curl --silent --show-error --fail -X POST "$api_url/v1/campaign/official/baseline"
-echo
+baseline_captured() {
+  curl --silent --show-error --fail "$api_url/v1/campaign/official" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("baseline-captured?") else 1)'
+}
+
+if baseline_captured; then
+  echo "Official baseline already captured; skipping baseline capture."
+else
+  echo "Capturing official baseline (read-only account query)."
+  curl --silent --show-error --fail -X POST "$api_url/v1/campaign/official/baseline"
+  echo
+fi
 
 while (( $(date +%s) < end_epoch )); do
   echo "Capturing equity snapshot at $(date -u +%FT%TZ)"

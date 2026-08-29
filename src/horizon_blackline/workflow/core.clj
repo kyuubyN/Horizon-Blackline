@@ -1,5 +1,17 @@
+;; KNOWN LIMITATION (audit HIGH-09): every state-transition function below (authorization!,
+;; submitted!, broker-unknown!, reconcile!, observe!, start-monitoring!, reevaluate!, post-mortem!,
+;; close!) does its entity mutation (store/put-authorization!, store/mark-execution!, ...), then
+;; append! (its own d/transact for the BDR event), then advance! (a THIRD, separate d/transact for
+;; the state CAS) -- a crash between any two of these leaves inconsistent state. A real fix means
+;; every one of these ~9 functions building all three pieces of tx-data up front and submitting
+;; them in a single d/transact, which means append!/advance! can no longer own their own transact
+;; calls -- a structural change to every call site, not a local patch, and it risks the hash-chain/
+;; CAS invariants that are this system's core correctness guarantee. Left as-is rather than rushed
+;; under the deadline; Datomic transactions are otherwise atomic, so this only bites on a process
+;; crash landing in one of these narrow windows, and this is paper trading.
 (ns horizon-blackline.workflow.core
-  (:require [horizon-blackline.bdr.core :as bdr]
+  (:require [horizon-blackline.agents.registry :as registry]
+            [horizon-blackline.bdr.core :as bdr]
             [clojure.string :as str]
             [horizon-blackline.canonical-json :as canonical]
             [horizon-blackline.execution.gateway :as gateway]
@@ -32,11 +44,42 @@
   (let [record (assoc (bdr/new-record request) :state :DRAFT)]
     (store/create-record! (:store system) record)))
 
+(def event-type->required-scope
+  "Only enforced for actors claiming a registered sub-agent id (see agents.registry) --
+   internal/orchestrator/service actors are not in the registry and pass through unchecked."
+  {:CANDIDATE_DISCOVERED "candidate:write"
+   :THESIS_RESEARCHED "thesis:write"
+   :EVIDENCE_CAPTURED "evidence:write"
+   :CRITIQUE_BUNDLE_COMPLETED "critique:write"
+   :BROKER_OBSERVED "observation:write"
+   :POSITION_REEVALUATED "observation:write"})
+
+(defn- authorize-actor! [event]
+  (let [actor (:actor event)
+        scope (get event-type->required-scope (:event-type event))]
+    (when (and scope (some #(= actor (:agent-id %)) registry/manifests))
+      (registry/authorize-action! actor scope))))
+
+(defn- thin-record
+  "bdr/append-event only ever reads :sealed?, :bdr-id, (count (:events record)), and
+   (:event-hash (last (:events record))) -- never event payloads -- so a record built from
+   store/head-info's cheap query is exactly as good as a full get-record here, without paying to
+   pull and JSON-parse every prior event just to append one more."
+  [head bdr-id]
+  (let [n (:event-count head)]
+    {:bdr-id bdr-id
+     :sealed? (:sealed? head)
+     :events (if (pos? n)
+               (conj (vec (repeat (dec n) nil)) {:event-hash (:head-hash head)})
+               [])}))
+
 (defn append! [system bdr-id event]
-  (let [record (store/get-record (:store system) bdr-id)]
-    (when-not record
+  (authorize-actor! event)
+  (let [head (store/head-info (:store system) bdr-id)]
+    (when-not head
       (throw (ex-info "BDR not found" {:bdr-id bdr-id})))
-    (store/append-event! (:store system) record (last (:events (bdr/append-event record event))))))
+    (let [record (thin-record head bdr-id)]
+      (store/append-event! (:store system) record (last (:events (bdr/append-event record event)))))))
 
 (defn- advance! [system bdr-id next-state]
   (let [record (store/get-record (:store system) bdr-id)]
@@ -61,7 +104,12 @@
                        :policy-bundle-id policy-bundle-id
                        :input-hash (bdr/sha256 (canonical/encode intent))
                        :issued-at (str issued-at)
-                       :expires-at (str expires-at)}]
+                       :expires-at (str expires-at)}
+        ;; :intent rides along in the event payload only (put-authorization! below picks its own
+        ;; fields, so this doesn't touch the Datomic authorization entity/schema). Storing the
+        ;; actual data next to its hash is what makes :input-hash independently checkable instead
+        ;; of an audit dead-end -- every other event here already carries its full payload.
+        event-payload (assoc authorization :intent intent)]
     (when (or (nil? record) (:sealed? record) (not= :CHALLENGED (:state record)))
       (throw (ex-info "Authorization requires a challenged, unsealed BDR" {:bdr-id bdr-id :state (:state record)})))
     (when-not (#{:ALLOW :DENY :REVIEW} (:result authorization))
@@ -70,7 +118,7 @@
     (append! system bdr-id {:event-type :AUTHORIZATION_ISSUED
                             :actor "blackline-authorizer"
                             :payload-schema "authorization_decision@1"
-                            :payload authorization})
+                            :payload event-payload})
     (advance! system bdr-id (case (:result authorization)
                               :ALLOW :AUTHORIZED
                               :DENY :DENIED
@@ -117,12 +165,18 @@
       (advance! system (:bdr-id authorization) :SUBMISSION_PENDING)
       execution)))
 
+(defn claim-execution!
+  "Must precede submitted!/broker-unknown! -- see dispatcher/dispatch! for why this is a
+   separate atomic step rather than folded into submitted!."
+  [system execution-id]
+  (store/claim-execution! (:store system) execution-id :SUBMISSION_PENDING :DISPATCHING))
+
 (defn submitted! [system execution-id receipt]
   (let [execution (store/get-execution (:store system) execution-id)]
-    (when-not (= :SUBMISSION_PENDING (:status execution))
-      (throw (ex-info "Only pending executions can be submitted" {:execution-id execution-id :status (:status execution)})))
+    (when-not (= :DISPATCHING (:status execution))
+      (throw (ex-info "Only claimed (dispatching) executions can be submitted" {:execution-id execution-id :status (:status execution)})))
     (let [updated (store/mark-execution! (:store system) execution-id
-                                         :SUBMISSION_PENDING :SUBMITTED receipt)]
+                                         :DISPATCHING :SUBMITTED receipt)]
       (append! system (:bdr-id updated)
                {:event-type :EXECUTION_SUBMITTED
                 :actor "alpaca-gateway"
@@ -133,10 +187,10 @@
 
 (defn broker-unknown! [system execution-id failure]
   (let [execution (store/get-execution (:store system) execution-id)]
-    (when-not (= :SUBMISSION_PENDING (:status execution))
-      (throw (ex-info "Only pending executions can become unknown" {:execution-id execution-id :status (:status execution)})))
+    (when-not (= :DISPATCHING (:status execution))
+      (throw (ex-info "Only claimed (dispatching) executions can become unknown" {:execution-id execution-id :status (:status execution)})))
     (let [updated (store/mark-execution! (:store system) execution-id
-                                         :SUBMISSION_PENDING :UNKNOWN failure)]
+                                         :DISPATCHING :UNKNOWN failure)]
       (append! system (:bdr-id updated)
                {:event-type :BROKER_OUTCOME_UNKNOWN
                 :actor "alpaca-gateway"

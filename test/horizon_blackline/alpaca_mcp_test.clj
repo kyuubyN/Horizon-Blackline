@@ -59,6 +59,16 @@
                                             :intent {:symbol "AAPL" :side "buy" :quantity "1"
                                                      :order-type "limit" :entry-price "100"}})))))
 
+(deftest sse-response-without-leading-event-line-still-parses
+  (let [send! (fn [_] {:status 200
+                        :headers {"mcp-session-id" "session-1"}
+                        :body "data: {\"jsonrpc\":\"2.0\",\"result\":{\"tools\":[]}}\n\n"})]
+    (is (= [] (mcp/list-tools! send! {:base-url "http://mcp.test" :session-id "session-1"}))))
+  (let [send! (fn [_] {:status 200
+                        :headers {"mcp-session-id" "session-1"}
+                        :body ": keep-alive\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"tools\":[]}}\n\n"})]
+    (is (= [] (mcp/list-tools! send! {:base-url "http://mcp.test" :session-id "session-1"})))))
+
 (deftest execution-gate-rejects-live-mismatch-and-expired-authorizations
   (let [intent {:intent-id "intent-1" :bdr-id "bdr-1" :asset-class :stock
                 :symbol "AAPL" :side :buy :quantity "1" :order-type :market}

@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_root=$(cd "$(dirname "$0")/.." && pwd)
 export JAVA_HOME="$project_root/.tools/jdk"
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=50.0 -XX:+UseG1GC}"
 export CLJ_CONFIG="$project_root/.tools/clojure-config"
 export CLJ_CACHE="$project_root/.tools/clojure-cache"
 data_root="${HORIZON_DATA_DIR:-${XDG_DATA_HOME:-$project_root/.local-share}/horizon-blackline}"
@@ -12,7 +13,7 @@ export ALPACA_PAPER_TRADE="${ALPACA_PAPER_TRADE:-true}"
 export ALPACA_MCP_URL="${ALPACA_MCP_URL:-http://127.0.0.1:8001/mcp}"
 
 if [[ -f "$project_root/.env" ]]; then
-  for key in ALPACA_PAPER_ACCOUNT_ID HORIZON_WATCHLIST HORIZON_ORCHESTRATOR_POLL_SECONDS \
+  for key in ALPACA_PAPER_ACCOUNT_ID HORIZON_WATCHLIST HORIZON_ORCHESTRATOR_POLL_SECONDS HORIZON_MONITORING_POLL_SECONDS \
              HORIZON_RISK_BUDGET_USD HORIZON_MAX_SYMBOL_WEIGHT HORIZON_MAX_GROSS_EXPOSURE \
              HORIZON_MAX_ADV_PARTICIPATION HORIZON_MAX_DRAWDOWN HORIZON_STOP_DISTANCE_PCT \
              HORIZON_ORDER_NOTIONAL_USD HORIZON_OFFICIAL_CAMPAIGN_ENABLED HORIZON_AUTONOMY_ENABLED \

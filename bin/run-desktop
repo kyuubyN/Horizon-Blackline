@@ -33,4 +33,4 @@ if ! curl --silent --fail http://127.0.0.1:8080/health >/dev/null; then
 fi
 
 cd "$project_root/desktop_flutter"
-exec "$flutter" run -d linux
+"$flutter" run -d linux

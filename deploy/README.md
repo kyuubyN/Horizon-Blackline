@@ -38,15 +38,29 @@ tar -xzf /tmp/jdk21.tar.gz -C .tools/jdk --strip-components=1
 .tools/jdk/bin/java -version
 ```
 
+`.../latest/21/...` resolves to whatever the newest JDK 21 point release is at
+download time, so it is not a fixed artifact and pinning a SHA-256 for it
+here would silently go stale on the next Adoptium release. For a
+reproducible/audited deploy, verify manually against Adoptium's published
+`SHA256SUMS` for the exact build resolved (`curl -sI ... | grep
+x-amz-meta-...` or the redirect target's filename, then compare against
+https://github.com/adoptium/temurin21-binaries/releases).
+
 ## 4. Clojure CLI (agnóstico de arquitetura)
 
 ```bash
 curl -O https://download.clojure.org/install/linux-install-1.12.1.1550.sh
+echo "aea202cd0573d79fd8b7db1b608762645a8f93006a86bc817ec130bed1d9707d  linux-install-1.12.1.1550.sh" | sha256sum -c -
 chmod +x linux-install-1.12.1.1550.sh
 ./linux-install-1.12.1.1550.sh --prefix "$PWD/.tools" --install-dir "$PWD/.tools/clojure"
 mkdir -p .tools/clojure-config .tools/clojure-cache
 rm linux-install-1.12.1.1550.sh
 ```
+
+The checksum above was computed directly from the versioned artifact (this
+URL is pinned to `1.12.1.1550`, unlike the JDK's `latest` endpoint, so it
+should stay stable); Clojure does not publish an official sidecar checksum
+for it, so recompute and compare independently if in doubt.
 
 ## 5. Sidecar MCP (Python via uv)
 

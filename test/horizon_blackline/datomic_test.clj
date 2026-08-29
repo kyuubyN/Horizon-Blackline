@@ -36,6 +36,52 @@
     (is (not (bdr/verify (assoc-in reloaded [:events 0 :payload :quantity] "999"))))
     (is (= [(:bdr-id record)] (mapv :bdr-id (store/list-records (:store system)))))))
 
+(deftest head-info-backed-append-keeps-the-hash-chain-valid-across-many-events
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "chain-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        record (workflow/create-bdr! system {:run-id "run-chain" :correlation-id "corr-chain"})
+        bdr-id (:bdr-id record)]
+    (dotimes [n 5]
+      (workflow/append! system bdr-id {:event-type :INTENT_CREATED :actor "orchestrator"
+                                       :payload-schema "trade_intent@1" :payload {:n n}}))
+    (let [reloaded (store/get-record (:store system) bdr-id)]
+      (is (= 5 (count (:events reloaded))))
+      (is (= [1 2 3 4 5] (mapv :sequence (:events reloaded))))
+      (is (bdr/verify reloaded)))))
+
+(deftest list-records-by-state-filters-server-side
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "state-filter-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        draft (workflow/create-bdr! system {:run-id "run-draft" :correlation-id "corr-draft"})
+        bdr-id (:bdr-id draft)
+        _ (workflow/challenge! system bdr-id {:critics []})
+        _ (workflow/authorization! system {:bdr-id bdr-id
+                                           :intent {:intent-id "i" :bdr-id bdr-id :symbol "AAPL" :asset-class :stock}
+                                           :policy-bundle-id "demo@1"
+                                           :evaluation {:result :ALLOW :reason-codes []}})]
+    (is (= [bdr-id] (mapv :bdr-id (store/list-records-by-state (:store system) [:AUTHORIZED]))))
+    (is (= [] (store/list-records-by-state (:store system) [:DRAFT])))))
+
+(deftest authorization-issued-event-carries-the-intent-alongside-its-hash
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "auth-intent-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        record (workflow/create-bdr! system {:run-id "run-side" :correlation-id "corr-side"})
+        bdr-id (:bdr-id record)
+        _ (workflow/challenge! system bdr-id {:critics []})
+        intent {:intent-id "intent-side" :bdr-id bdr-id :symbol "AAPL" :asset-class :stock :side :sell}
+        _ (workflow/authorization! system {:bdr-id bdr-id :intent intent
+                                           :policy-bundle-id "demo@1"
+                                           :evaluation {:result :ALLOW :reason-codes []}})
+        event (last (:events (store/get-record (:store system) bdr-id)))]
+    (is (= :AUTHORIZATION_ISSUED (:event-type event)))
+    ;; Round-trips through JSON storage like every other event payload -- comes back a string,
+    ;; which is exactly what the desktop client (a JSON consumer) sees too.
+    (is (= "sell" (get-in event [:payload :intent :side]))
+        "the desktop UI needs the real intent, not just a hash, to show something other than '—'")))
+
 (deftest authorization-requires-challenge-and-persists-its-decision
   (let [system {:store (store/new-store {:storage-dir :mem
                                          :system (str "auth-" (UUID/randomUUID))
@@ -72,6 +118,7 @@
                                                   :call-tool! (fn [& _] (reset! broker-called true))})
                            false
                            (catch clojure.lang.ExceptionInfo _ true))
+        _ (workflow/claim-execution! system (:execution-id execution))
         submitted (workflow/submitted! system (:execution-id execution) {:broker-order-id "paper-1"})
         observed (workflow/observe! system (:execution-id execution)
                                     {:status :FILLED :receipt {:broker-order-id "paper-1" :filled-qty "10"}})
@@ -160,6 +207,38 @@
                                         :initialize! (fn [_] {:session-id "test"})
                                         :list-tools! (fn [_] []) :call-tool! (fn [& _] {})})))))
 
+(deftest concurrent-dispatch-attempts-never-both-reach-the-broker
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "race-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        record (workflow/create-bdr! system {:run-id "run-race" :correlation-id "corr-race"})
+        bdr-id (:bdr-id record)
+        _ (workflow/challenge! system bdr-id {:critics []})
+        intent {:intent-id "intent-race" :bdr-id bdr-id :symbol "AAPL" :asset-class :stock}
+        authorization (workflow/authorization! system {:bdr-id bdr-id :intent intent
+                                                        :policy-bundle-id "demo@1"
+                                                        :evaluation {:result :ALLOW :reason-codes []}})
+        execution (workflow/prepare-execution! system {:authorization-id (:authorization-id authorization)
+                                                        :intent intent :idempotency-key "race-1" :paper? true})
+        broker-call-count (atom 0)
+        deps {:mcp-url "http://mcp.test" :paper-account-id "paper-account"
+              :initialize! (fn [_] {:session-id "test"})
+              :list-tools! (fn [_] [{:name "get_account_info"} {:name "place_stock_order"}])
+              :call-tool! (fn [_ tool _]
+                            (case tool
+                              "get_account_info" {:content [{:type "text" :text "{\"id\":\"paper-account\"}"}]}
+                              "place_stock_order" (do (swap! broker-call-count inc)
+                                                      {:content [{:type "text" :text "{\"status\":\"accepted\"}"}]})))}
+        ;; Simulate the race: claim the execution the way dispatch! itself would, right before
+        ;; the broker call, then attempt a second concurrent dispatch! against the same,
+        ;; now-claimed execution -- it must fail without ever touching the broker.
+        _ (store/claim-execution! (:store system) (:execution-id execution) :SUBMISSION_PENDING :DISPATCHING)
+        second-attempt (try (dispatcher/dispatch! system (:execution-id execution) deps)
+                            :unexpectedly-succeeded
+                            (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+    (is (= 0 @broker-call-count) "the racing dispatch! must never reach call-tool! for an already-claimed execution")
+    (is (= (:execution-id execution) (:execution-id second-attempt)))))
+
 (deftest canceled-decisions-can-close-and-receive-post-mortem
   (let [system {:store (store/new-store {:storage-dir :mem
                                          :system (str "canceled-" (UUID/randomUUID))
@@ -174,6 +253,7 @@
                                                         :evaluation {:result :ALLOW :reason-codes []}})
         execution (workflow/prepare-execution! system {:authorization-id (:authorization-id authorization)
                                                         :intent intent :idempotency-key "cancel-1" :paper? true})
+        _ (workflow/claim-execution! system (:execution-id execution))
         _ (workflow/submitted! system (:execution-id execution) {:broker-order-id "paper-cancel"})
         _ (workflow/observe! system (:execution-id execution) {:status :CANCELED :receipt {:broker-order-id "paper-cancel"}})
         closed (workflow/close! system bdr-id "canceled")

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'horizon_api.dart';
@@ -57,6 +58,14 @@ class BackendLifecycle {
         runInShell: false,
         workingDirectory: File(executable).parent.parent.path,
       );
+      _process!.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => print('[backend] $line'));
+      _process!.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => print('[backend:err] $line'));
       return true;
     } on ProcessException {
       return false;
@@ -65,7 +74,7 @@ class BackendLifecycle {
 
   Future<void> dispose() async {
     final process = _process;
-    if (process != null) process.kill(ProcessSignal.sigterm);
+    if (process != null) process.kill();
     _process = null;
   }
 
