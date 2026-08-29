@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+memory_root="$project_root/HorizonMemory"
+venv_dir="$project_root/.tools/proofray-venv"
+
+if [[ ! -d "$memory_root" ]]; then
+  echo "Missing $memory_root; ProofRay (HorizonMemory) is a separate, git-ignored checkout." >&2
+  exit 1
+fi
+
+if [[ ! -x "$venv_dir/bin/python" ]]; then
+  uv venv --python 3.12 "$venv_dir" --quiet
+  uv pip install --python "$venv_dir/bin/python" --quiet numpy -r "$memory_root/api/requirements.txt"
+fi
+
+env_file="$project_root/.env"
+if [[ -f "$env_file" ]]; then
+  for key in PROOFRAY_ENGINE_PROFILE PROOFRAY_CONVERSATIONAL_RECALL; do
+    if [[ -z "${!key:-}" ]]; then
+      export "$key"="$(awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$env_file")"
+    fi
+  done
+fi
+
+cd "$memory_root"
+export PYTHONPATH="src"
+exec "$venv_dir/bin/python" api/server.py

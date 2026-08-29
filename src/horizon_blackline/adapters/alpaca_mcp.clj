@@ -11,7 +11,8 @@
 (def protocol-version "2025-03-26")
 (def execution-tools #{"place_stock_order" "place_crypto_order" "place_option_order"})
 (def cancel-tools #{"cancel_order_by_id"})
-(def read-tools #{"get_account_info" "get_order_by_client_id" "get_stock_latest_quote"})
+(def read-tools #{"get_account_info" "get_order_by_client_id" "get_stock_latest_quote"
+                   "get_all_positions" "get_stock_bars" "get_news" "get_clock"})
 
 (defn- send-http! [{:keys [url headers body]}]
   (let [client (HttpClient/newBuilder)

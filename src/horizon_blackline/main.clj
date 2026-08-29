@@ -14,7 +14,8 @@
             [horizon-blackline.readiness :as readiness]
             [horizon-blackline.schema :as schema]
             [horizon-blackline.workflow.core :as workflow]
-            [horizon-blackline.persistence.datomic :as store])
+            [horizon-blackline.persistence.datomic :as store]
+            [horizon-blackline.orchestrator :as orchestrator])
   (:gen-class))
 
 (def mapper (json/object-mapper {:decode-key-fn keyword}))
@@ -223,13 +224,45 @@
                                           (response 200 (workflow/reevaluate! system
                                                                               (get-in request [:path-params :id])
                                                                               (update (json-body request) :decision keyword))))}]
-      ["/v1/system:freeze" {:post (fn [request]
+      ["/v1/system/freeze" {:post (fn [request]
                                      (let [{:keys [actor reason]} (json-body request)]
-                                       (response 200 (workflow/freeze! system actor reason))))}]]))))
+                                       (response 200 (workflow/freeze! system actor reason))))}]
+      ["/v1/system/unfreeze"
+       {:post (fn [request]
+                (let [{:keys [actor reason operator-confirmation]} (json-body request)]
+                  (when-not (= "UNFREEZE" operator-confirmation)
+                    (throw (ex-info "Explicit unfreeze confirmation is required" {:reason-code :SYSTEM_FROZEN})))
+                  (response 200 (workflow/unfreeze! system actor reason))))}]]))))
 
 (def app (delay (make-app @system)))
 
+(defn- start-orchestrator-loop!
+  "Datomic Local holds one file lock per storage-dir, so the trading loop must run inside this
+   same JVM rather than as a second OS process racing the API for that lock. Opt-in via
+   HORIZON_ORCHESTRATOR_EMBEDDED so plain `bin/run-api` (dev/testing) stays API-only."
+  []
+  (if-not (= "true" (System/getenv "HORIZON_ORCHESTRATOR_EMBEDDED"))
+    (println "[main] HORIZON_ORCHESTRATOR_EMBEDDED not true; orchestrator loop not started")
+    (let [cfg (orchestrator/config)]
+      (if (empty? (:watchlist cfg))
+        (println "[main] HORIZON_WATCHLIST empty; orchestrator loop not started")
+        (let [deps (orchestrator/default-deps)
+              thread (Thread.
+                      (fn []
+                        (println "[main] orchestrator loop starting, watchlist:" (:watchlist cfg))
+                        (while true
+                          (try
+                            (orchestrator/tick! @system deps cfg (campaign/config) (java.time.Instant/now))
+                            (orchestrator/tick-monitoring! @system deps (java.time.Instant/now))
+                            (catch Exception e
+                              (println "[main] orchestrator tick cycle failed:" (.getMessage e))))
+                          (Thread/sleep (* 1000 (:poll-seconds cfg))))))]
+          (.setDaemon thread true)
+          (.setName thread "orchestrator-loop")
+          (.start thread))))))
+
 (defn -main [& _]
+  (start-orchestrator-loop!)
   (jetty/run-jetty @app {:host "127.0.0.1"
                          :port (Integer/parseInt (or (System/getenv "PORT") "8080"))
                          :join? true}))

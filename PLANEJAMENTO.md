@@ -60,7 +60,7 @@ somente no seu processo/container.
 - `POST /v1/authorizations`: emite `ALLOW`, `DENY` ou `REVIEW` com TTL.
 - `POST /v1/executions`: somente gateway; exige autorização válida.
 - `GET /v1/bdr/{id}`: devolve eventos, hashes e artefatos para auditoria.
-- `POST /v1/system:freeze`: impede novas entradas e preserva reconciliação.
+- `POST /v1/system/freeze`: impede novas entradas e preserva reconciliação.
 - `GET /ready`: mostra gates de configuração Paper sem revelar segredos.
 
 Todos os limites usam JSON versionado, `additionalProperties=false`, decimais
@@ -96,6 +96,55 @@ identidade de ator e `idempotency-key`.
 - A jornada `MOCK` é determinística, persiste BDRs e percorre autorização,
   execução sintética, observação, monitoramento, reavaliação e post-mortem.
   Ela nunca chama a Alpaca e é rotulada como sintética na API e no desktop.
+
+## Loop autônomo
+
+`horizon-blackline.orchestrator` implementa o loop exigido pela janela oficial
+(trading autônomo sem confirmação humana). `tick!` percorre `HORIZON_WATCHLIST`
+e para cada símbolo cria BDR, evidência, descoberta/pesquisa determinísticas,
+críticos próprios (frescor, concentração, risco), risk-snapshot real via MCP
+(`get_account_info`, `get_all_positions`, `get_stock_bars`) e `policy/evaluate`.
+Em `ALLOW`, autoriza e prepara a execução; só então consulta
+`campaign/autonomy-allowed?` para decidir se despacha ou deixa em
+`SUBMISSION_PENDING`. `tick-monitoring!` observa/reconcilia/reavalia posições
+abertas via `get_order_by_client_id` e cotação real, com saída determinística
+por rompimento de stop. Ambos checam `frozen?` primeiro e isolam exceções por
+símbolo/registro — um símbolo com falha não derruba o loop. `decide-intent` é
+o único ponto que produz um TradeIntent candidato: hoje ele consome o
+`:direction`/`:confidence` de `intelligence/research!` (notícias reais via MCP
+`get_news` -> verificação determinística via ProofRay -> julgamento do LLM
+Featherless/Gemini) e só propõe `buy` ou `sell` quando a confiança atinge
+`HORIZON_MIN_CONFIDENCE`; tamanho por notional fixo e stop percentual fixo
+continuam sendo cálculo determinístico, não julgamento do modelo. O LLM não
+tem autoridade de capital: ele só preenche campos de um `thesis` map que ainda
+precisa passar por `decide-intent`, críticos, `policy/evaluate` e
+`authorization!` sem exceção — o mesmo caminho que qualquer outro TradeIntent.
+
+- `get_all_positions`, `get_stock_bars` e `get_news` foram adicionados ao
+  allowlist somente-leitura do MCP após verificação contra o servidor Alpaca
+  MCP local em execução; os nomes foram confirmados via `tools/list` real, não
+  supostos.
+- O risk-snapshot é fail-closed: `daily-drawdown` vem de `last_equity`/`equity`
+  da conta (não de `get_portfolio_history`, cujo array fica vazio em contas
+  novas) e `estimated-participation` vem de `get_stock_bars` (média de volume
+  de 5 dias, feed `iex`); se qualquer uma dessas leituras falhar, o snapshot
+  é marcado inválido e a política nega.
+- `decide-intent` agora propõe `buy` ou `sell` conforme a direção do thesis;
+  não há lógica de venda a descoberto além do `side :sell` padrão de mercado
+  (o gateway/MCP tratam isso como qualquer ordem de venda). Direção `hold`,
+  confiança abaixo do limiar, ou qualquer falha no pipeline de pesquisa
+  (sem notícia, ProofRay fora do ar, JSON do LLM malformado, chaves ausentes)
+  resolvem para nenhum TradeIntent neste tick — nunca um default arriscado.
+  `tick-monitoring!` só decide `HOLD`/`EXIT` (saída total ao romper o stop);
+  não há `REDUCE` parcial.
+- Os campos de posição (`symbol`, `market_value`, `qty`) foram assumidos pelo
+  formato público conhecido da Alpaca; a conta Paper usada para validação
+  estava sem posições abertas, então o formato de item não-vazio não foi
+  confirmado empiricamente.
+- Uma decisão que fica em `SUBMISSION_PENDING` por falta de autonomia/janela
+  não é reprocessada automaticamente quando a janela abre; só novos ticks
+  a partir daquele momento despacham. Evite iniciar o orquestrador com
+  autonomia esperada antes do início da janela oficial.
 
 ## Limites explícitos
 

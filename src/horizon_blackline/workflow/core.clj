@@ -80,6 +80,9 @@
 (defn freeze! [system actor reason]
   (store/freeze! (:store system) {:actor actor :reason reason :at (str (Instant/now))}))
 
+(defn unfreeze! [system actor reason]
+  (store/unfreeze! (:store system) {:actor actor :reason reason :at (str (Instant/now))}))
+
 (defn prepare-execution!
   "Creates a durable execution outbox record after all local gates pass. It does
    not call Alpaca; a dispatcher may only consume this record after the BDR

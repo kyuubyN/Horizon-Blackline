@@ -1,0 +1,190 @@
+(ns horizon-blackline.orchestrator-test
+  (:require [clojure.test :refer [deftest is]]
+            [horizon-blackline.campaign :as campaign]
+            [horizon-blackline.orchestrator :as orchestrator]
+            [horizon-blackline.persistence.datomic :as store]
+            [horizon-blackline.workflow.core :as workflow])
+  (:import (java.time Instant)
+           (java.util UUID)))
+
+(def now (Instant/parse "2026-08-28T15:00:00Z"))
+
+(defn- system [] {:store (store/new-store {:storage-dir :mem
+                                           :system (str "orchestrator-" (UUID/randomUUID))
+                                           :db-name "blackline"})})
+
+(def cfg (assoc (orchestrator/config (constantly nil)) :watchlist ["AAPL"] :paper? true))
+
+(def campaign-config
+  {:enabled? true :autonomy-enabled? true :paper? true
+   :account-id "official-paper" :paper-account-id "official-paper"
+   :expected-starting-equity "100000"
+   :starts-at (Instant/parse "2026-08-28T00:00:00Z")
+   :ends-at (Instant/parse "2026-08-29T00:00:00Z")})
+
+(defn- seed-campaign! [system]
+  (store/create-campaign! (:store system)
+                          {:campaign-id campaign/campaign-id
+                           :account-id "official-paper"
+                           :starts-at (str (:starts-at campaign-config))
+                           :ends-at (str (:ends-at campaign-config))
+                           :baseline-equity "100000"
+                           :baseline-at (str now)
+                           :autonomy-enabled? true}))
+
+(defn- make-deps [{:keys [ap bp bars positions equity last-equity calls quote-error?
+                          news direction confidence]
+                   :or {ap "100.00" bp "99.90" equity 100000 last-equity 100000
+                        bars {:AAPL [{:v 1000000} {:v 1000000}]} positions []
+                        news [{:headline "AAPL rallies on strong iPhone demand"
+                               :summary "Sales beat estimates." :source "test-wire"
+                               :created_at "2026-08-28T12:00:00Z"}]
+                        direction "buy" confidence 0.9}}]
+  {:mcp-url "http://mcp.test"
+   :paper-account-id "official-paper"
+   :market-open! (fn [_] true)
+   :initialize! (fn [_] :session)
+   :list-tools! (fn [_] [{:name "place_stock_order"} {:name "get_account_info"}])
+   :ask-proofray! (fn [_question _documents]
+                    {:state "resolved" :sources [{:text "evidence" :source "doc:1" :relevance_score 0.9}]})
+   :complete-llm! (fn [_request]
+                    (str "{\"direction\":\"" direction "\",\"confidence\":" confidence
+                         ",\"reasoning\":\"test thesis\",\"key_risks\":[]}"))
+   :call-tool!
+   (fn [_ tool arguments]
+     (case tool
+       "get_account_info"
+       {:structuredContent {:data {:id "official-paper" :equity equity
+                                   :buying_power equity :last_equity last-equity}}
+        :content [{:type "text" :text "{\"id\":\"official-paper\"}"}]}
+       "get_all_positions"
+       {:structuredContent {:data {:result positions}}}
+       "get_stock_bars"
+       {:structuredContent {:data {:bars (or bars {})}}}
+       "get_news"
+       {:structuredContent {:data {:news news}}}
+       "get_stock_latest_quote"
+       (if (and quote-error? (= (:symbols arguments) "BAD"))
+         (throw (ex-info "quote unavailable" {:symbol (:symbols arguments)}))
+         {:structuredContent {:data {:quotes {(keyword (:symbols arguments)) {:ap ap :bp bp}}}}})
+       "place_stock_order"
+       (do (when calls (swap! calls conj arguments))
+           {:content [{:type "text" :text "{\"status\":\"accepted\"}"}]})
+       (throw (ex-info "unexpected tool" {:tool tool}))))})
+
+(deftest frozen-system-short-circuits-both-ticks
+  (let [system (system)
+        deps (make-deps {:calls (atom []) :bars {}})]
+    (workflow/freeze! system "operator" "kill switch")
+    (is (= {:frozen? true} (orchestrator/tick! system deps cfg campaign-config now)))
+    (is (= {:frozen? true} (orchestrator/tick-monitoring! system deps now)))
+    (is (empty? (store/list-records (:store system))))))
+
+(deftest deny-path-never-reaches-dispatch
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls :bars {}})
+        result (orchestrator/tick! system deps cfg campaign-config now)
+        record (first (store/list-records (:store system)))]
+    (is (= :DENY (:result (first (:results result)))))
+    (is (= :DENIED (:state record)))
+    (is (empty? @calls))))
+
+(deftest autonomy-not-allowed-leaves-execution-pending-without-dispatch
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls})
+        result (orchestrator/tick! system deps cfg campaign-config now)
+        record (first (store/list-records (:store system)))]
+    (is (= :ALLOW (:result (first (:results result)))))
+    (is (= :SUBMISSION_PENDING (:state record)))
+    (is (empty? @calls))))
+
+(deftest autonomy-allowed-calls-dispatch-exactly-once
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls})]
+    (seed-campaign! system)
+    (let [result (orchestrator/tick! system deps cfg campaign-config now)
+          record (first (store/list-records (:store system)))]
+      (is (= :ALLOW (:result (first (:results result)))))
+      (is (= :SUBMITTED (:state record)))
+      (is (= 1 (count @calls))))))
+
+(deftest market-closed-skips-the-tick-without-any-network-calls-or-bdrs
+  (let [system (system)
+        calls (atom [])
+        deps (assoc (make-deps {:calls calls}) :market-open! (fn [_] false))
+        result (orchestrator/tick! system deps cfg campaign-config now)]
+    (is (= {:frozen? false :market-open? false} result))
+    (is (empty? (store/list-records (:store system))))
+    (is (empty? @calls))))
+
+(deftest one-symbol-exception-does-not-stop-others
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls :quote-error? true})
+        cfg (assoc cfg :watchlist ["BAD" "AAPL"])
+        result (orchestrator/tick! system deps cfg campaign-config now)
+        by-symbol (into {} (map (juxt :symbol identity)) (:results result))]
+    (is (some? (:error (get by-symbol "BAD"))))
+    (is (= :ALLOW (:result (get by-symbol "AAPL"))))
+    (is (= 1 (count (store/list-records (:store system)))))))
+
+(deftest hold-direction-produces-no-bdr-and-no-dispatch-call
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls :direction "hold" :confidence 0.9})
+        result (orchestrator/tick! system deps cfg campaign-config now)]
+    (is (true? (:skipped? (first (:results result)))))
+    (is (empty? (store/list-records (:store system))))
+    (is (empty? @calls))))
+
+(deftest low-confidence-produces-no-bdr-and-no-dispatch-call
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls :direction "buy" :confidence 0.1})
+        result (orchestrator/tick! system deps cfg campaign-config now)]
+    (is (true? (:skipped? (first (:results result)))))
+    (is (empty? (store/list-records (:store system))))
+    (is (empty? @calls))))
+
+(deftest sell-direction-with-sufficient-confidence-proposes-a-sell-intent-above-entry-stop
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls :direction "sell" :confidence 0.9})]
+    (seed-campaign! system)
+    (let [result (orchestrator/tick! system deps cfg campaign-config now)
+          record (first (store/list-records (:store system)))]
+      (is (= :ALLOW (:result (first (:results result)))))
+      (is (= "sell" (:side (first @calls))))
+      (is (some? record)))))
+
+(def base-config (assoc (orchestrator/config (constantly nil))
+                        :order-notional-usd "1000" :stop-distance-pct "0.02"
+                        :risk-budget "500" :min-confidence 0.6))
+
+(def base-candidate {:symbol "AAPL" :ask-price "100.00"})
+
+(deftest decide-intent-holds-produce-no-trade-intent
+  (is (nil? (orchestrator/decide-intent base-candidate {:direction "hold" :confidence 0.9}
+                                        {} base-config now))))
+
+(deftest decide-intent-low-confidence-produces-no-trade-intent
+  (is (nil? (orchestrator/decide-intent base-candidate {:direction "buy" :confidence 0.59}
+                                        {} base-config now))))
+
+(deftest decide-intent-nil-thesis-produces-no-trade-intent
+  (is (nil? (orchestrator/decide-intent base-candidate nil {} base-config now))))
+
+(deftest decide-intent-buy-sets-stop-below-entry
+  (let [intent (orchestrator/decide-intent base-candidate {:direction "buy" :confidence 0.9}
+                                           {} base-config now)]
+    (is (= :buy (:side intent)))
+    (is (< (bigdec (:stop-price intent)) (bigdec (:entry-price intent))))))
+
+(deftest decide-intent-sell-sets-stop-above-entry
+  (let [intent (orchestrator/decide-intent base-candidate {:direction "sell" :confidence 0.9}
+                                           {} base-config now)]
+    (is (= :sell (:side intent)))
+    (is (> (bigdec (:stop-price intent)) (bigdec (:entry-price intent))))))

@@ -1,0 +1,15 @@
+[Unit]
+Description=Horizon Blackline - official campaign equity monitor
+After=horizon-blackline-api.service
+Requires=horizon-blackline-api.service
+
+[Service]
+Type=simple
+User=horizon
+WorkingDirectory=/opt/horizon-blackline
+ExecStart=/opt/horizon-blackline/bin/run-official-campaign-monitor
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

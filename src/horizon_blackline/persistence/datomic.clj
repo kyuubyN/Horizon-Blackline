@@ -80,8 +80,13 @@
      (d/create-database client {:db-name db-name})
      (let [conn (d/connect client {:db-name db-name})]
        (d/transact conn {:tx-data schema})
-       (d/transact conn {:tx-data [{:system/id "horizon-blackline"
-                                    :system/frozen? false}]})
+       ;; Only seed the system entity (frozen? false) the first time this storage-dir is ever
+       ;; used. A restart connecting to existing storage must never touch :system/frozen? --
+       ;; that would silently un-freeze a kill switch across a process crash/restart, which
+       ;; defeats the entire point of a durable kill switch.
+       (when (empty? (d/q '[:find ?e :where [?e :system/id "horizon-blackline"]] (d/db conn)))
+         (d/transact conn {:tx-data [{:system/id "horizon-blackline"
+                                      :system/frozen? false}]}))
        {:client client :conn conn :db-name db-name}))))
 
 (defn- pull-record [store bdr-id]
@@ -278,6 +283,15 @@
                           :system/freeze-reason (:reason freeze)
                           :system/frozen-at (:at freeze)}]})
   freeze)
+
+(defn unfreeze! [store unfreeze]
+  (d/transact (:conn store)
+              {:tx-data [{:db/id [:system/id "horizon-blackline"]
+                          :system/frozen? false
+                          :system/freeze-actor (:actor unfreeze)
+                          :system/freeze-reason (:reason unfreeze)
+                          :system/frozen-at (:at unfreeze)}]})
+  unfreeze)
 
 (defn get-campaign [store campaign-id]
   (when-let [entity (d/pull (d/db (:conn store))

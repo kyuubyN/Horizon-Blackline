@@ -6,6 +6,18 @@
             [horizon-blackline.workflow.core :as workflow])
   (:import (java.util UUID)))
 
+(deftest freeze-survives-a-process-restart-against-the-same-storage
+  (let [system-name (str "restart-" (UUID/randomUUID))
+        conn-config {:storage-dir :mem :system system-name :db-name "blackline"}
+        first-store (store/new-store conn-config)]
+    (store/freeze! first-store {:actor "operator" :reason "emergency" :at "2026-08-28T00:00:00Z"})
+    (is (true? (store/frozen? first-store)))
+    ;; A fresh new-store call against the SAME storage-dir/system simulates a process
+    ;; restart -- it must never re-seed :system/frozen? back to false over existing data.
+    (let [restarted-store (store/new-store conn-config)]
+      (is (true? (store/frozen? restarted-store))
+          "kill switch must survive a process restart, not silently reset"))))
+
 (deftest bdr-events-are-persisted-as-immutable-facts
   (let [system {:store (store/new-store {:storage-dir :mem
                                          :system (str "test-" (UUID/randomUUID))

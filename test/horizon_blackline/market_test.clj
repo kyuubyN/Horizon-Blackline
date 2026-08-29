@@ -20,3 +20,24 @@
 (deftest invalid-symbol-fails-before-mcp-call
   (is (thrown? clojure.lang.ExceptionInfo
                (market/latest-stock-quote! {:mcp-url "http://mcp" :initialize! identity :call-tool! (fn [& _] (throw (ex-info "must not call" {}))) :now #(java.time.Instant/now)} "bad symbol!"))))
+
+(deftest latest-news-is-normalized-as-temporal-evidence
+  (let [news (market/latest-news!
+              {:mcp-url "http://mcp.local/mcp"
+               :initialize! (fn [url] {:url url})
+               :call-tool! (fn [_ tool arguments]
+                             (is (= "get_news" tool))
+                             (is (= "AAPL" (:symbols arguments)))
+                             {:structuredContent
+                              {:data {:news [{:headline "Apple beats estimates" :summary "Strong quarter."
+                                              :source "test-wire" :created_at "2026-08-28T12:00:00Z"}]}}})
+               :now #(java.time.Instant/parse "2026-08-28T12:00:00Z")}
+              "aapl")]
+    (is (= "AAPL" (:symbol news)))
+    (is (= 1 (count (:items news))))
+    (is (= :news (get-in news [:evidence :source-type])))
+    (is (re-matches #"sha256:.+" (get-in news [:evidence :content-hash])))))
+
+(deftest invalid-symbol-fails-before-news-mcp-call
+  (is (thrown? clojure.lang.ExceptionInfo
+               (market/latest-news! {:mcp-url "http://mcp" :initialize! identity :call-tool! (fn [& _] (throw (ex-info "must not call" {}))) :now #(java.time.Instant/now)} "bad symbol!"))))

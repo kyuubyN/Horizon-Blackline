@@ -1,0 +1,14 @@
+[Unit]
+Description=Horizon Blackline - ProofRay sidecar (deterministic evidence verification)
+After=network.target
+
+[Service]
+Type=simple
+User=horizon
+WorkingDirectory=/opt/horizon-blackline
+ExecStart=/opt/horizon-blackline/bin/run-proofray
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=Horizon Blackline - API core (BDR, policy, gateway)
+After=horizon-blackline-mcp.service network-online.target
+Requires=horizon-blackline-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=horizon
+WorkingDirectory=/opt/horizon-blackline
+ExecStart=/opt/horizon-blackline/bin/run-api
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

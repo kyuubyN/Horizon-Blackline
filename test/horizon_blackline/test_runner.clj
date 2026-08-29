@@ -10,8 +10,11 @@
             [horizon-blackline.datomic-test]
             [horizon-blackline.demo-test]
             [horizon-blackline.intelligence-test]
+            [horizon-blackline.llm-test]
             [horizon-blackline.market-test]
+            [horizon-blackline.orchestrator-test]
             [horizon-blackline.policy-test]
+            [horizon-blackline.proofray-test]
             [horizon-blackline.readiness-test])
   (:gen-class))
 
@@ -26,8 +29,11 @@
                                'horizon-blackline.datomic-test
                                'horizon-blackline.demo-test
                                'horizon-blackline.intelligence-test
+                               'horizon-blackline.llm-test
                                'horizon-blackline.market-test
+                               'horizon-blackline.orchestrator-test
                                'horizon-blackline.policy-test
+                               'horizon-blackline.proofray-test
                                'horizon-blackline.readiness-test)]
     (when (pos? (+ (:fail result) (:error result)))
       (System/exit 1))))

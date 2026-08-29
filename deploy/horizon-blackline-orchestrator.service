@@ -1,0 +1,15 @@
+[Unit]
+Description=Horizon Blackline - autonomous trading orchestrator
+After=horizon-blackline-api.service horizon-blackline-mcp.service
+Requires=horizon-blackline-api.service horizon-blackline-mcp.service
+
+[Service]
+Type=simple
+User=horizon
+WorkingDirectory=/opt/horizon-blackline
+ExecStart=/opt/horizon-blackline/bin/run-orchestrator
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

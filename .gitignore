@@ -9,3 +9,4 @@ node_modules/
 .m2/
 .datomic/
 .local-share/
+HorizonMemory/

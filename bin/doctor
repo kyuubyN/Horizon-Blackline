@@ -13,7 +13,8 @@ cd "$project_root"
 (require (quote [horizon-blackline.adapters.alpaca-mcp :as m]))
 (let [session (m/initialize! "http://127.0.0.1:8001/mcp")
       names (set (map :name (m/list-tools! session)))
-      required #{"get_account_info" "place_stock_order" "place_crypto_order" "place_option_order"}]
+      required #{"get_account_info" "place_stock_order" "place_crypto_order" "place_option_order"
+                 "get_all_positions" "get_stock_bars" "get_order_by_client_id" "get_news" "get_clock"}]
   (when-not (every? names required)
     (throw (ex-info "MCP toolset is incomplete" {:missing (sort (remove names required))})))
   (println "MCP toolset: ok"))'

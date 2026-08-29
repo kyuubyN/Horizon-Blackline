@@ -27,7 +27,7 @@
         system-status (app (request :get "/v1/system" nil))
         malformed-intent (app (request :post "/v1/authorizations" "{\"intent\":{\"symbol\":\"AAPL\"}}"))
         malformed-evidence (app (request :post "/v1/bdr/does-not-matter/evidence" "{\"source-uri\":\"x\"}"))
-        frozen (app (request :post "/v1/system:freeze" "{\"actor\":\"test-operator\",\"reason\":\"test\"}"))
+        frozen (app (request :post "/v1/system/freeze" "{\"actor\":\"test-operator\",\"reason\":\"test\"}"))
         frozen-status (app (request :get "/v1/system" nil))
         dispatch (app (request :post "/v1/executions/does-not-matter/dispatch" "{}"))
         first-id (:bdr-id (first (store/list-records (:store system))))
@@ -45,6 +45,22 @@
     (is (= 422 (:status malformed-intent)))
     (is (= 422 (:status malformed-evidence)))
     (is (= 422 (:status dispatch)))))
+
+(deftest unfreeze-requires-explicit-confirmation-and-then-clears-the-freeze
+  (let [system {:store (store/new-store {:storage-dir :mem
+                                         :system (str "api-" (UUID/randomUUID))
+                                         :db-name "blackline"})}
+        app (main/make-app system)
+        _ (app (request :post "/v1/system/freeze" "{\"actor\":\"test-operator\",\"reason\":\"test\"}"))
+        rejected (app (request :post "/v1/system/unfreeze" "{\"actor\":\"test-operator\",\"reason\":\"test\"}"))
+        still-frozen (app (request :get "/v1/system" nil))
+        unfrozen (app (request :post "/v1/system/unfreeze"
+                               "{\"actor\":\"test-operator\",\"reason\":\"test\",\"operator-confirmation\":\"UNFREEZE\"}"))
+        final-status (app (request :get "/v1/system" nil))]
+    (is (= 422 (:status rejected)))
+    (is (= true (:frozen? (json/read-value (:body still-frozen) mapper))))
+    (is (= 200 (:status unfrozen)))
+    (is (= false (:frozen? (json/read-value (:body final-status) mapper))))))
 
 (deftest json-intent-enums-are-normalized-at-the-api-boundary
   (is (= {:asset-class :stock :side :buy :order-type :limit}

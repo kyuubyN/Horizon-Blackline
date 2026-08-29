@@ -40,6 +40,42 @@ Quando essa cotação é usada, descoberta e pesquisa determinísticas são
 registradas antes dos críticos, preservando candidato, tese, claims e limites
 sem produzir previsão ou autorização própria.
 
+## Loop autônomo (orquestrador)
+
+`bin/run-orchestrator` roda `horizon-blackline.orchestrator` em primeiro plano,
+lendo `HORIZON_WATCHLIST` (símbolos separados por vírgula) a cada
+`HORIZON_ORCHESTRATOR_POLL_SECONDS`. A cada tick, para cada símbolo: captura
+cotação, monta evidência, roda `intelligence/research!` (notícias reais via
+MCP `get_news` -> verificação determinística via ProofRay -> julgamento de
+direção/confiança via LLM) e passa o resultado pelo ponto de troca
+`decide-intent`, que só produz um TradeIntent quando a direção é `buy`/`sell`
+e a confiança atinge `HORIZON_MIN_CONFIDENCE` (padrão `0.6`) — direção `hold`,
+confiança baixa ou qualquer falha no pipeline de pesquisa resolvem para "sem
+trade" neste tick. O LLM nunca tem autoridade de capital: ele só preenche
+campos de um `thesis`; `decide-intent` continua sendo o único ponto que produz
+um TradeIntent candidato, que ainda precisa passar pelos críticos
+determinísticos próprios (frescor de evidência, concentração, risco), por um
+risk-snapshot real a partir de conta/posições/volume via MCP, por
+`policy/evaluate` e, se `ALLOW`, por autorização e preparação de execução. Só
+então verifica `campaign/autonomy-allowed?`: se verdadeiro, despacha; se
+falso, a decisão fica registrada em `SUBMISSION_PENDING` para dispatch manual
+via `DISPATCH-PAPER`. Um segundo tick observa/reconcilia/reavalia posições
+abertas usando estado real do broker. O kill switch (`frozen?`) é checado no
+topo de cada tick.
+
+O LLM de estratégia (`horizon-blackline.adapters.llm`) tenta Featherless AI
+primeiro (`FEATHER_API_KEY`) e cai para Google Gemini (`GEMINI_API_KEY`)
+quando Featherless falha ou não está configurado; se nenhuma das duas chaves
+estiver preenchida, o loop continua rodando mas nunca propõe uma ordem — é o
+comportamento fail-closed esperado, não um erro. A verificação de evidência
+(`horizon-blackline.adapters.proofray`) depende do sidecar ProofRay local
+(`bin/run-proofray`, ver [deploy/README.md](deploy/README.md)); se ele estiver
+fora do ar, o mesmo fail-closed se aplica.
+
+Para instalar em uma VM Linux gratuita (Oracle Ampere A1 ARM64 ou GCP
+`e2-micro` x86_64) com unidades systemd para MCP, API, orquestrador e monitor
+de campanha, veja [deploy/README.md](deploy/README.md).
+
 ## Campanha oficial Paper
 
 O FAQ exige uma conta Paper nova de US$100.000; não reutilize a conta de teste
@@ -93,6 +129,14 @@ Para iniciar o MCP local, preencha as duas chaves de uma conta **Paper** e
 `./bin/run-alpaca-mcp`. O servidor fica restrito a `127.0.0.1:8001`; não o
 exponha à rede. Uma ordem ainda exige BDR, críticos, avaliação, autorização,
 outbox, conta allowlisted e confirmação explícita `DISPATCH-PAPER`.
+
+Para o orquestrador usar pesquisa real (notícias + ProofRay + LLM), rode
+também `./bin/run-proofray` em outro terminal (cria seu próprio virtualenv em
+`.tools/proofray-venv` na primeira execução; fica restrito a
+`127.0.0.1:8420`) e preencha `FEATHER_API_KEY`/`GEMINI_API_KEY` em `.env`. Sem
+isso, `decide-intent` sempre resolve para "sem trade" — fail-closed, não é um
+requisito para os demais comandos (`bin/run-api`, `bin/rehearse-demo`, jornada
+`MOCK`).
 
 
 > O projeto falha fechado e não possui opção de live trading. Paper trading é

@@ -1,0 +1,15 @@
+[Unit]
+Description=Horizon Blackline - Alpaca MCP sidecar (read-only + paper order tools)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=horizon
+WorkingDirectory=/opt/horizon-blackline
+ExecStart=/opt/horizon-blackline/bin/run-alpaca-mcp
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
