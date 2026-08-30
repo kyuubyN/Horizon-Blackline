@@ -5,7 +5,7 @@ project_root=$(cd "$(dirname "$0")/.." && pwd)
 flutter="$project_root/.tools/flutter/bin/flutter"
 
 if [[ ! -x "$flutter" ]]; then
-  echo "Flutter local nao encontrado. Execute a instalacao documentada no README."
+  echo "Local Flutter not found. Run the installation documented in the README."
   exit 1
 fi
 
@@ -28,7 +28,7 @@ if ! curl --silent --fail http://127.0.0.1:8080/health >/dev/null; then
 fi
 
 if ! curl --silent --fail http://127.0.0.1:8080/health >/dev/null; then
-  echo "O nucleo Clojure nao ficou disponivel em 127.0.0.1:8080."
+  echo "The Clojure core did not become available at 127.0.0.1:8080."
   exit 1
 fi
 

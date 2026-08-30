@@ -1,143 +1,159 @@
 # Horizon Blackline
 
-Paper trading governado para a Alpaca AI Trading Agents Hackathon. Consulte
-[PLANEJAMENTO.md](PLANEJAMENTO.md) para as decisões, contratos e critérios de
-aceite.
+Governed autonomous options trading for the Alpaca AI Trading Agents
+Hackathon. See [PLANEJAMENTO.md](PLANEJAMENTO.md) for design decisions,
+contracts, and acceptance criteria. See [docs/WRITEUP.md](docs/WRITEUP.md)
+for the one-page summary of the AI logic, risk gates, and Alpaca
+infrastructure.
 
-## Desktop Flutter (principal)
+## Desktop Flutter (primary UI)
 
-O console desktop fica em `desktop_flutter/`, comunica somente com a API
-Clojure local e não armazena nem exibe segredos. Com o SDK local instalado,
-inicie a experiência completa com:
+The desktop console lives in `desktop_flutter/`; it talks only to the local
+Clojure API and never stores or displays secrets. With the local SDK
+installed, start the full experience with:
 
 ```bash
 bin/run-desktop
 ```
 
-O console deixa `PAPER ONLY` permanente, diferencia jornadas `MOCK` de eventos
-Paper e permite revisar BDRs, sua cadeia de hashes e os controles de freeze.
-O backend permanece a autoridade: Datomic guarda os fatos, Clojure aplica a
-política e o gateway é a única fronteira que pode falar ao MCP da Alpaca.
+The console stays permanently `PAPER ONLY`, distinguishes `MOCK` journeys
+from Paper events, and lets you review BDRs, their hash chain, and the
+freeze/kill-switch controls. The backend remains the authority: Datomic holds
+the facts, Clojure enforces policy, and the gateway is the only boundary
+allowed to talk to the Alpaca MCP.
 
-Para gerar uma distribuição Linux com esse núcleo como sidecar local, execute
-`bin/package-desktop-linux`. O pacote não leva `.env` nem credenciais; consulte
-o [guia do desktop](desktop_flutter/README.md) para configurar o ambiente Paper.
+To build a Linux distribution with this core as a local sidecar, run
+`bin/package-desktop-linux`. The package ships without `.env` or credentials;
+see the [desktop guide](desktop_flutter/README.md) to configure the Paper
+environment.
 
-Antes de uma apresentação, execute `bin/rehearse-demo`. Ele valida o guard
-local `paper-only` e a jornada determinística MOCK (DENY, ALLOW, replay e BDR
-selado), sem consultar a conta nem enviar uma ordem à Alpaca.
+Before a demo, run `bin/rehearse-demo`. It validates the local `paper-only`
+guard and the deterministic MOCK journey (DENY, ALLOW, replay, and a sealed
+BDR) without touching the account or sending an order to Alpaca.
 
-Cada BDR também pode ser exportado pelo desktop como
-`horizon-blackline/audit-export@1`, contendo o registro completo e o resultado
-do replay para revisão local independente.
+Every BDR can also be exported from the desktop as
+`horizon-blackline/audit-export@1`, containing the full record and its replay
+result for independent local review.
 
-O desktop também pode criar uma nova decisão local governada usando evidência
-fixture e snapshot declarado pelo operador. Esse fluxo cria BDR, challenge e
-autorização, mas não tem capacidade de acionar o gateway ou enviar uma ordem.
-Ele também pode capturar uma cotação somente-leitura pelo MCP e convertê-la em
-evidência temporal do BDR.
-Quando essa cotação é usada, descoberta e pesquisa determinísticas são
-registradas antes dos críticos, preservando candidato, tese, claims e limites
-sem produzir previsão ou autorização própria.
+The desktop can also create a new locally governed decision using fixture
+evidence and an operator-declared snapshot. That flow produces a BDR,
+challenge, and authorization, but has no ability to reach the gateway or send
+an order. It can also capture a read-only quote through the MCP and turn it
+into a BDR's temporal evidence. When that quote is used, deterministic
+discovery and research are recorded before the critics, preserving the
+candidate, thesis, claims, and limits without producing its own forecast or
+authorization.
 
-## Loop autônomo (orquestrador)
+## Autonomous loop (orchestrator)
 
-`bin/run-orchestrator` roda `horizon-blackline.orchestrator` em primeiro plano,
-lendo `HORIZON_WATCHLIST` (símbolos separados por vírgula) a cada
-`HORIZON_ORCHESTRATOR_POLL_SECONDS`. A cada tick, para cada símbolo: captura
-cotação, monta evidência, roda `intelligence/research!` (notícias reais via
-MCP `get_news` -> verificação determinística via ProofRay -> julgamento de
-direção/confiança via LLM) e passa o resultado pelo ponto de troca
-`decide-intent`, que só produz um TradeIntent quando a direção é `buy`/`sell`
-e a confiança atinge `HORIZON_MIN_CONFIDENCE` (padrão `0.6`) — direção `hold`,
-confiança baixa ou qualquer falha no pipeline de pesquisa resolvem para "sem
-trade" neste tick. O LLM nunca tem autoridade de capital: ele só preenche
-campos de um `thesis`; `decide-intent` continua sendo o único ponto que produz
-um TradeIntent candidato, que ainda precisa passar pelos críticos
-determinísticos próprios (frescor de evidência, concentração, risco), por um
-risk-snapshot real a partir de conta/posições/volume via MCP, por
-`policy/evaluate` e, se `ALLOW`, por autorização e preparação de execução. Só
-então verifica `campaign/autonomy-allowed?`: se verdadeiro, despacha; se
-falso, a decisão fica registrada em `SUBMISSION_PENDING` para dispatch manual
-via `DISPATCH-PAPER`. Um segundo tick observa/reconcilia/reavalia posições
-abertas usando estado real do broker. O kill switch (`frozen?`) é checado no
-topo de cada tick.
+`bin/run-orchestrator` runs `horizon-blackline.orchestrator` in the
+foreground, reading `HORIZON_WATCHLIST` (comma-separated symbols) every
+`HORIZON_ORCHESTRATOR_POLL_SECONDS`. On every tick, for each symbol: it
+captures a stock quote, builds evidence, runs `intelligence/research!` (real
+news via the MCP `get_news` tool -> deterministic verification via ProofRay
+-> a direction/confidence judgment from the LLM), and feeds the result to the
+`decide-intent` swap point. A `buy` thesis with sufficient confidence selects
+a near-the-money **call**; a `sell` thesis selects a near-the-money **put** —
+every trade here is a single-leg long option (`HORIZON_MIN_CONFIDENCE`
+defaults to `0.6`), never a naked/short position, so the maximum loss is
+always bounded at the premium paid. A `hold` direction, low confidence, no
+liquid contract within the configured strike/expiration band, or any research
+pipeline failure resolves to "no trade" for that tick.
 
-O LLM de estratégia (`horizon-blackline.adapters.llm`) tenta Featherless AI
-primeiro (`FEATHER_API_KEY`) e cai para Google Gemini (`GEMINI_API_KEY`)
-quando Featherless falha ou não está configurado; se nenhuma das duas chaves
-estiver preenchida, o loop continua rodando mas nunca propõe uma ordem — é o
-comportamento fail-closed esperado, não um erro. A verificação de evidência
-(`horizon-blackline.adapters.proofray`) depende do sidecar ProofRay local
-(`bin/run-proofray`, ver [deploy/README.md](deploy/README.md)); se ele estiver
-fora do ar, o mesmo fail-closed se aplica.
+The LLM never has capital authority: it only fills in the fields of a
+`thesis`. `decide-intent` remains the sole point that produces a candidate
+TradeIntent, which still has to clear its own deterministic critics (evidence
+freshness, concentration, risk budget), a real risk snapshot built from live
+account/position/option-quote data via the MCP, `policy/evaluate`, and — if
+`ALLOW` — authorization and execution preparation. Only then does it check
+`campaign/autonomy-allowed?`: if true, it dispatches; if false, the decision
+sits recorded at `SUBMISSION_PENDING` for manual dispatch via
+`DISPATCH-PAPER`. A second, faster tick observes/reconciles/reevaluates open
+positions against real broker state; a stop breach places a real, separately
+authorized closing order rather than just flipping internal state. The kill
+switch (`frozen?`) is checked at the top of every tick.
 
-Para instalar em uma VM Linux gratuita (Oracle Ampere A1 ARM64 ou GCP
-`e2-micro` x86_64) com unidades systemd para MCP, API, orquestrador e monitor
-de campanha, veja [deploy/README.md](deploy/README.md).
+The strategy LLM (`horizon-blackline.adapters.llm`) tries Featherless AI
+first (`FEATHER_API_KEY`) and falls back to Google Gemini (`GEMINI_API_KEY`)
+when Featherless fails or is unconfigured; if neither key is set, the loop
+keeps running but never proposes a trade — that is the expected fail-closed
+behavior, not an error. Evidence verification
+(`horizon-blackline.adapters.proofray`) depends on the local ProofRay sidecar
+(`bin/run-proofray`, see [deploy/README.md](deploy/README.md)); the same
+fail-closed behavior applies if it is down.
 
-## Campanha oficial Paper
+To deploy to a free Linux VM with systemd units for the MCP, API,
+orchestrator, and campaign monitor, see [deploy/README.md](deploy/README.md).
 
-O FAQ exige uma conta Paper nova de US$100.000; não reutilize a conta de teste
-na medição. Configure `HORIZON_OFFICIAL_ACCOUNT_ID`, `HORIZON_OFFICIAL_WINDOW_START`
-e `HORIZON_OFFICIAL_WINDOW_END`. No início da janela, após ativar
-`HORIZON_OFFICIAL_CAMPAIGN_ENABLED=true`, execute
-`bin/run-official-campaign-monitor`: ele registra baseline e equity periódica
-somente por leitura de conta, sem criar ou enviar ordens.
+## Official Paper campaign
 
-`HORIZON_OFFICIAL_ACCOUNT_ID` deve ser idêntico a `ALPACA_PAPER_ACCOUNT_ID`.
-O sistema recusa baseline, snapshots e autonomia se as duas contas divergirem.
+The hackathon requires a brand-new $100,000 Paper account dedicated to this
+event; the scoring window never reuses the development/test account. Set
+`HORIZON_OFFICIAL_ACCOUNT_ID`, `HORIZON_OFFICIAL_WINDOW_START`, and
+`HORIZON_OFFICIAL_WINDOW_END`. At the start of the window, after enabling
+`HORIZON_OFFICIAL_CAMPAIGN_ENABLED=true`, run
+`bin/run-official-campaign-monitor`: it records the starting-equity baseline
+and periodic equity snapshots through read-only account calls only — it never
+creates or sends an order itself.
 
-`HORIZON_AUTONOMY_ENABLED` permanece `false` por padrão. Mesmo ativado, o
-dispatch autônomo exige campanha ativa, baseline, janela válida, conta oficial
-e sistema não congelado; BDR, política e gateway continuam obrigatórios.
+`HORIZON_OFFICIAL_ACCOUNT_ID` must be identical to `ALPACA_PAPER_ACCOUNT_ID`.
+The system refuses to capture a baseline, record snapshots, or allow autonomy
+if the two accounts diverge.
 
-Para verificar uma exportação sem iniciar a API, MCP ou o desktop, execute:
+`HORIZON_AUTONOMY_ENABLED` defaults to `false`. Even when enabled, autonomous
+dispatch still requires an active campaign, a captured baseline, a valid
+window, the official account, and an unfrozen system; the BDR, policy, and
+gateway gates all still apply on top of that.
+
+To verify an export without starting the API, MCP, or desktop app, run:
 
 ```bash
-bin/verify-audit-export /caminho/para/bdr-<id>.audit.json
+bin/verify-audit-export /path/to/bdr-<id>.audit.json
 ```
 
-O comando falha fechado se o formato, cadeia de hashes, replay declarado,
-contagem de eventos ou selo não forem consistentes.
+The command fails closed if the format, hash chain, declared replay, event
+count, or seal are inconsistent.
 
-## Início local, sem Docker
+## Local start, no Docker
 
-1. Execute `./bin/check` para testes e compilação do painel.
-2. Execute `./bin/run-api`.
-3. Abra `http://localhost:8080` para o painel; `http://localhost:8080/health`
-   permanece como health check JSON.
+1. Run `./bin/check` for tests and dashboard compilation.
+2. Run `./bin/run-api`.
+3. Open `http://localhost:8080` for the dashboard;
+   `http://localhost:8080/health` remains a JSON health check.
 
-`GET http://localhost:8080/ready` informa, sem revelar segredos, se o dispatch
-Paper possui `ALPACA_PAPER_TRADE=true`, ID allowlisted da conta Paper e URL MCP.
-O servidor também fica restrito a `127.0.0.1` no modo local.
+`GET http://localhost:8080/ready` reports, without revealing secrets, whether
+Paper dispatch has `ALPACA_PAPER_TRADE=true`, an allowlisted Paper account ID,
+and an MCP URL configured. The server is also restricted to `127.0.0.1` in
+local mode.
 
-Com a API e o MCP em execução, `./bin/doctor` valida esses gates e a presença
-das ferramentas MCP necessárias, sem consultar conta ou enviar ordens.
+With the API and MCP running, `./bin/doctor` validates those gates and the
+presence of the required MCP tools, without touching the account or sending
+an order.
 
-O resultado da validação end-to-end em Alpaca Paper está em
+The result of an end-to-end validation against Alpaca Paper is in
 [docs/PAPER_TEST_RESULT.md](docs/PAPER_TEST_RESULT.md).
 
-Os runtimes Java e Clojure ficam em `.tools/`, ignorado pelo Git; não há
-dependência de Docker nem instalação global. O BDR e os fatos de autorização
-ficam em Datomic Local, no diretório `.datomic/`, também ignorado pelo Git. O
-comando `run-api` inicia apenas o núcleo Clojure; o legado web pode ser
-compilado sob demanda com `HORIZON_BUILD_WEB_UI=true`.
+The Java and Clojure runtimes live under `.tools/`, git-ignored; there is no
+Docker dependency and nothing is installed globally. The BDR and
+authorization facts live in Datomic Local, under `.datomic/`, also
+git-ignored. The `run-api` command starts only the Clojure core; the legacy
+web UI can be built on demand with `HORIZON_BUILD_WEB_UI=true`.
 
-Para iniciar o MCP local, preencha as duas chaves de uma conta **Paper** e
-`ALPACA_PAPER_ACCOUNT_ID` em `.env` e, em outro terminal, execute
-`./bin/run-alpaca-mcp`. O servidor fica restrito a `127.0.0.1:8001`; não o
-exponha à rede. Uma ordem ainda exige BDR, críticos, avaliação, autorização,
-outbox, conta allowlisted e confirmação explícita `DISPATCH-PAPER`.
+To start the local MCP, fill in both keys for a **Paper** account and
+`ALPACA_PAPER_ACCOUNT_ID` in `.env`, then, in another terminal, run
+`./bin/run-alpaca-mcp`. The server is restricted to `127.0.0.1:8001`; never
+expose it to the network. An order still requires a BDR, critics, evaluation,
+authorization, outbox, an allowlisted account, and an explicit
+`DISPATCH-PAPER` confirmation.
 
-Para o orquestrador usar pesquisa real (notícias + ProofRay + LLM), rode
-também `./bin/run-proofray` em outro terminal (cria seu próprio virtualenv em
-`.tools/proofray-venv` na primeira execução; fica restrito a
-`127.0.0.1:8420`) e preencha `FEATHER_API_KEY`/`GEMINI_API_KEY` em `.env`. Sem
-isso, `decide-intent` sempre resolve para "sem trade" — fail-closed, não é um
-requisito para os demais comandos (`bin/run-api`, `bin/rehearse-demo`, jornada
-`MOCK`).
+For the orchestrator to use real research (news + ProofRay + LLM), also run
+`./bin/run-proofray` in another terminal (it creates its own virtualenv under
+`.tools/proofray-venv` on first run; restricted to `127.0.0.1:8420`) and fill
+in `FEATHER_API_KEY`/`GEMINI_API_KEY` in `.env`. Without that,
+`decide-intent` always resolves to "no trade" — fail-closed, and not a
+requirement for the other commands (`bin/run-api`, `bin/rehearse-demo`, the
+`MOCK` journey).
 
 
-> O projeto falha fechado e não possui opção de live trading. Paper trading é
-> uma simulação e não uma recomendação financeira.
+> The project fails closed and has no live-trading option. Paper trading is a
+> simulation, not financial advice.

@@ -13,7 +13,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/horizon-blackline %h/.config
+ReadWritePaths=/opt/horizon-blackline /home/horizon/.config
 
 [Install]
 WantedBy=multi-user.target

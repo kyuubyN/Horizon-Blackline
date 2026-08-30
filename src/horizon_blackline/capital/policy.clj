@@ -13,17 +13,19 @@
 (defn positive-decimal? [value]
   (and (string? value) (pos? (decimal value))))
 
-(defn calculate-loss-at-stop [{:keys [side quantity entry-price stop-price]}]
+(defn calculate-loss-at-stop [{:keys [side quantity entry-price stop-price asset-class]}]
   (let [side-kw (if (keyword? side) side (keyword (str side)))
+        class-kw (if (keyword? asset-class) asset-class (keyword (str asset-class)))
+        multiplier (if (= class-kw :option) 100M 1M)
         q (decimal quantity)
         entry (decimal entry-price)
         stop (decimal stop-price)
         distance (if (= side-kw :buy) (- entry stop) (- stop entry))]
-    (.multiply q (max 0M distance))))
+    (.multiply (.multiply q (max 0M distance)) multiplier)))
 
 (defn evaluate
-  "Avalia somente dados tipados. O resultado é fail-closed: qualquer entrada
-   ausente, congelamento, excedente ou evidência inválida é uma negação."
+  "Evaluates typed data only. The result is fail-closed: any missing input,
+   freeze, budget breach, or invalid evidence is a denial."
   [{:keys [intent snapshot policy frozen? evidence-valid? critics-complete?
            snapshot-valid? policy-active?]}]
   (let [{:keys [quantity entry-price stop-price symbol]} intent

@@ -24,7 +24,7 @@ class BackendLifecycle {
     if (!await _startBundledSidecar()) {
       throw const BackendUnavailable(
         BackendIssue.sidecarNotFound,
-        'Nao encontrei um sidecar backend/bin/run-api neste pacote.',
+        'Could not find a backend/bin/run-api sidecar in this package.',
       );
     }
     for (var attempt = 0; attempt < 20; attempt++) {
@@ -33,7 +33,7 @@ class BackendLifecycle {
     }
     throw const BackendUnavailable(
       BackendIssue.startupTimedOut,
-      'O sidecar nao respondeu em 10 segundos.',
+      'The sidecar did not respond within 10 seconds.',
     );
   }
 

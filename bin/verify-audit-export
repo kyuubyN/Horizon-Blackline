@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Uso: bin/verify-audit-export <arquivo.audit.json>" >&2
+  echo "Usage: bin/verify-audit-export <file.audit.json>" >&2
   exit 64
 fi
 
 input=$1
 if [[ ! -f "$input" ]]; then
-  echo "Arquivo nao encontrado: $input" >&2
+  echo "File not found: $input" >&2
   exit 66
 fi
 input=$(realpath "$input")

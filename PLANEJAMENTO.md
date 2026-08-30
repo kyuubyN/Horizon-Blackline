@@ -1,157 +1,176 @@
-# Horizon Blackline — plano de implementação
+# Horizon Blackline — implementation plan
 
-## Objetivo
+## Goal
 
-Construir uma plataforma de paper trading governado para a Alpaca AI Trading
-Agents Hackathon. O produto demonstra autoridade verificável, e não promessa
-de rentabilidade: modelos e agentes propõem; funções determinísticas calculam;
-Blackline autoriza; o gateway executa somente em uma conta Alpaca Paper.
+Build a governed paper-trading platform for the Alpaca AI Trading Agents
+Hackathon. The product demonstrates verifiable authority, not a promise of
+profitability: models and agents propose; deterministic functions calculate;
+Blackline authorizes; the gateway executes only against an Alpaca Paper
+account.
 
-## Decisões confirmadas
+## Confirmed decisions
 
-- Stack: Clojure/JVM no backend e Flutter Desktop no console operacional.
-- Superfície: API interna e painel com timeline, replay, decisão e kill switch.
-- Integração: o Alpaca MCP v2 é um sidecar interno; nenhum agente possui acesso
-  direto a ferramentas do broker.
-- Cobertura: ações/ETFs, cripto e opções desde o início, com contratos e
-  políticas específicos por classe de ativo.
-- Inteligência: fontes e críticos determinísticos garantem a demo; um adaptador
-  de LLM é opcional e não possui autoridade de capital.
-- Persistência: Datomic é a fonte de fatos transacional; a cadeia de eventos
-  BDR e a outbox são gravadas antes de efeitos externos.
-- Operação local: Java, Clojure e MCP são processos locais; Docker não é
-  requisito para desenvolver, testar ou demonstrar o núcleo.
+- Stack: Clojure/JVM on the backend, Flutter Desktop for the operator
+  console.
+- Surface: an internal API and a dashboard with timeline, replay, decision,
+  and kill switch.
+- Integration: the Alpaca MCP v2 is an internal sidecar; no agent has direct
+  access to broker tools.
+- Coverage: options are the only tradeable instrument in the autonomous
+  strategy (single-leg long calls/puts — see "Autonomous loop" below), with
+  a schema that also still models stock/ETF/crypto for the manually
+  operator-driven desktop flow.
+- Intelligence: deterministic sources and critics guarantee the demo; an LLM
+  adapter proposes a thesis only and never has capital authority.
+- Persistence: Datomic is the transactional source of truth; the BDR event
+  chain and the outbox are written before any external effect.
+- Local operation: Java, Clojure, and the MCP are local processes; Docker is
+  not required to develop, test, or demo the core.
 
-## Estrutura e fronteiras
+## Structure and boundaries
 
 ```text
 UI (Flutter Desktop) -> API/Workflow -> Capital Authority -> Blackline Authorizer
                                           |                    |
                                       Datomic BDR          Alpaca Gateway
                                                                |
-                                                    MCP sidecar (interno)
+                                                    MCP sidecar (internal)
                                                                |
                                                        Alpaca PAPER
 ```
 
-O gateway é o único cliente MCP. Ele exige uma autorização não expirada, com
-`input_hash` igual ao `intent_hash`, e valida a conta/ambiente paper antes de
-enviar qualquer ordem. O MCP não publica portas para o host. Credenciais ficam
-somente no seu processo/container.
+The gateway is the only MCP client. It requires a non-expired authorization,
+with `input_hash` equal to `intent_hash`, and validates the account/paper
+environment before sending any order. The MCP does not publish ports to the
+host. Credentials live only in its own process/container.
 
-## Marcos de implementação
+## Implementation milestones
 
-1. Fundação: projeto, configuração, Compose, schemas, reason codes e API base.
-2. Núcleo verificável: BDR append-only, hash chain, replay, state machine,
-   políticas, engines de risco e testes de propriedades.
-3. Integração: cliente MCP, paper guard, outbox, idempotência, reconciliação e
-   adapters para ações/ETFs, cripto e opções.
-4. Inteligência: discovery, evidência temporal, tese, críticos e adaptador LLM
-   opcional que produz somente artefatos tipados.
-5. Experiência: painel desktop Flutter de decisão, replay, tamper detection, kill switch e
-   jornadas happy/denial/re-evaluation.
-6. Endurecimento: matriz adversarial, fixtures/mock declarado, observabilidade,
-   scanner de segredos e ensaio de demo.
+1. Foundation: project setup, configuration, schemas, reason codes, and the
+   base API.
+2. Verifiable core: append-only BDR, hash chain, replay, state machine,
+   policies, risk engines, and property tests.
+3. Integration: MCP client, paper guard, outbox, idempotency, reconciliation,
+   and adapters for stocks/ETFs, crypto, and options.
+4. Intelligence: discovery, temporal evidence, thesis, critics, and an
+   optional LLM adapter that only ever produces typed artifacts.
+5. Experience: the Flutter desktop decision/replay dashboard, tamper
+   detection, kill switch, and happy/denial/re-evaluation journeys.
+6. Hardening: adversarial matrix, declared fixtures/mocks, observability, a
+   secrets scanner, and a demo rehearsal.
 
-## Contratos públicos internos
+## Internal public contracts
 
-- `POST /v1/bdr`: abre um Decision Record em estado `DRAFT`.
-- `POST /v1/capital/evaluate`: avalia intent e snapshot, sem poder autorizar.
-- `POST /v1/authorizations`: emite `ALLOW`, `DENY` ou `REVIEW` com TTL.
-- `POST /v1/executions`: somente gateway; exige autorização válida.
-- `GET /v1/bdr/{id}`: devolve eventos, hashes e artefatos para auditoria.
-- `POST /v1/system/freeze`: impede novas entradas e preserva reconciliação.
-- `GET /ready`: mostra gates de configuração Paper sem revelar segredos.
+- `POST /v1/bdr`: opens a Decision Record in `DRAFT` state.
+- `POST /v1/capital/evaluate`: evaluates an intent and snapshot, with no
+  authority to authorize.
+- `POST /v1/authorizations`: issues `ALLOW`, `DENY`, or `REVIEW` with a TTL.
+- `POST /v1/executions`: gateway-only; requires a valid authorization.
+- `GET /v1/bdr/{id}`: returns events, hashes, and artifacts for audit.
+- `POST /v1/system/freeze`: blocks new entries and preserves reconciliation.
+- `GET /ready`: shows Paper configuration gates without revealing secrets.
 
-Todos os limites usam JSON versionado, `additionalProperties=false`, decimais
-como strings e timestamps RFC 3339 UTC. Mutação requer `correlation-id`,
-identidade de ator e `idempotency-key`.
+Every boundary uses versioned JSON, `additionalProperties=false`, decimals as
+strings, and RFC 3339 UTC timestamps. Mutation requires a `correlation-id`,
+actor identity, and an `idempotency-key`.
 
-## Dados e segurança
+## Data and security
 
-- `.env` é local e ignorado; copiar `.env.example` e preencher as duas chaves.
-- Datomic Local persiste em `.datomic/`; uma futura porta para Datomic Cloud
-  preservará os contratos de repositório, sem reintroduzir CRUD relacional.
-- `ALPACA_PAPER_TRADE=true` e uma conta Paper allowlisted são obrigatórios no
-  guard de dispatch.
-- O MCP oficial é fixado no commit `872abbf28dab6cdde7d341fc13ac139b8002d1d9`.
-- O BDR nunca contém segredos, prompts brutos não aprovados ou dados sensíveis.
-- Eventos não são atualizados: correções geram novo evento que referencia o
-  anterior; hashes encadeados detectam adulteração.
+- `.env` is local and git-ignored; copy `.env.example` and fill in both keys.
+- Datomic Local persists to `.datomic/`; a future port to Datomic Cloud will
+  preserve the repository contracts without reintroducing relational CRUD.
+- `ALPACA_PAPER_TRADE=true` and an allowlisted Paper account are required by
+  the dispatch guard.
+- The official MCP is pinned to commit
+  `872abbf28dab6cdde7d341fc13ac139b8002d1d9`.
+- The BDR never contains secrets, unapproved raw prompts, or sensitive data.
+- Events are never updated: corrections produce a new event that references
+  the previous one; chained hashes detect tampering.
 
-## Critérios de aceite
+## Acceptance criteria
 
-- Uma ordem paper só é possível após BDR, engines, policy e autorização.
-- Uma intenção que viola concentração recebe `DENY` sem chamada MCP.
-- Repetir a mesma execução não duplica a ordem.
-- Endpoint/conta live, dados vencidos, policy expirada, hash divergente ou engine
-  indisponível falham fechados.
-- O painel rastreia claim -> evidence -> critique -> calculation -> decision ->
-  order/fill e reproduz a decisão a partir do BDR selado.
-- A suíte cobre ações/ETFs, cripto e opções, além de timeout pós-submit, fills
-  parciais, kill switch e tamper detection.
-- A validação Paper de AAPL em 2026-08-28 percorreu o gateway real, confirmou
-  cancelamento sem fills e preservou a falha inicial de mapeamento; consulte
-  `docs/PAPER_TEST_RESULT.md`.
-- A jornada `MOCK` é determinística, persiste BDRs e percorre autorização,
-  execução sintética, observação, monitoramento, reavaliação e post-mortem.
-  Ela nunca chama a Alpaca e é rotulada como sintética na API e no desktop.
+- A paper order is only possible after a BDR, the engines, policy, and
+  authorization.
+- An intent that violates concentration receives `DENY` without any MCP
+  call.
+- Repeating the same execution never duplicates the order.
+- A live endpoint/account, stale data, an expired policy, a mismatched hash,
+  or an unavailable engine all fail closed.
+- The dashboard tracks claim -> evidence -> critique -> calculation ->
+  decision -> order/fill and can reproduce the decision from the sealed BDR.
+- The suite covers stocks/ETFs, crypto, and options, plus post-submit
+  timeout, partial fills, the kill switch, and tamper detection.
+- The AAPL Paper validation on 2026-08-28 went through the real gateway,
+  confirmed a cancellation with no fills, and preserved the initial mapping
+  failure rather than rewriting it; see `docs/PAPER_TEST_RESULT.md`.
+- The `MOCK` journey is deterministic, persists BDRs, and walks through
+  authorization, synthetic execution, observation, monitoring,
+  re-evaluation, and post-mortem. It never calls Alpaca and is labeled
+  synthetic in both the API and the desktop app.
 
-## Loop autônomo
+## Autonomous loop
 
-`horizon-blackline.orchestrator` implementa o loop exigido pela janela oficial
-(trading autônomo sem confirmação humana). `tick!` percorre `HORIZON_WATCHLIST`
-e para cada símbolo cria BDR, evidência, descoberta/pesquisa determinísticas,
-críticos próprios (frescor, concentração, risco), risk-snapshot real via MCP
-(`get_account_info`, `get_all_positions`, `get_stock_bars`) e `policy/evaluate`.
-Em `ALLOW`, autoriza e prepara a execução; só então consulta
-`campaign/autonomy-allowed?` para decidir se despacha ou deixa em
-`SUBMISSION_PENDING`. `tick-monitoring!` observa/reconcilia/reavalia posições
-abertas via `get_order_by_client_id` e cotação real, com saída determinística
-por rompimento de stop. Ambos checam `frozen?` primeiro e isolam exceções por
-símbolo/registro — um símbolo com falha não derruba o loop. `decide-intent` é
-o único ponto que produz um TradeIntent candidato: hoje ele consome o
-`:direction`/`:confidence` de `intelligence/research!` (notícias reais via MCP
-`get_news` -> verificação determinística via ProofRay -> julgamento do LLM
-Featherless/Gemini) e só propõe `buy` ou `sell` quando a confiança atinge
-`HORIZON_MIN_CONFIDENCE`; tamanho por notional fixo e stop percentual fixo
-continuam sendo cálculo determinístico, não julgamento do modelo. O LLM não
-tem autoridade de capital: ele só preenche campos de um `thesis` map que ainda
-precisa passar por `decide-intent`, críticos, `policy/evaluate` e
-`authorization!` sem exceção — o mesmo caminho que qualquer outro TradeIntent.
+`horizon-blackline.orchestrator` implements the loop required by the
+official window (autonomous trading with no human confirmation). `tick!`
+walks `HORIZON_WATCHLIST` and, for each symbol, builds a BDR, evidence,
+deterministic discovery/research, its own critics (freshness, concentration,
+risk), a real risk snapshot from live account/option-quote data via the MCP,
+and `policy/evaluate`. On `ALLOW`, it authorizes and prepares the execution;
+only then does it consult `campaign/autonomy-allowed?` to decide whether to
+dispatch or leave the decision at `SUBMISSION_PENDING`. `tick-monitoring!`
+observes/reconciles/re-evaluates open positions via `get_order_by_client_id`
+and a real option quote, with a deterministic exit on a stop breach. Both
+check `frozen?` first and isolate exceptions per symbol/record — a failure
+on one symbol never brings the loop down. `decide-intent` is the sole point
+that produces a candidate TradeIntent: it consumes the `:direction`/
+`:confidence` from `intelligence/research!` (real news via the MCP `get_news`
+tool -> deterministic verification via ProofRay -> a judgment from the
+Featherless/Gemini LLM) and only proposes a trade once confidence clears
+`HORIZON_MIN_CONFIDENCE`. A `buy` thesis selects a near-the-money **call**;
+a `sell` thesis selects a near-the-money **put** (contract selection,
+sizing, and the stop are all deterministic calculation, never model
+judgment) — every position is a single-leg long option, never naked/short,
+so the maximum loss is always bounded at the premium paid. The LLM has no
+capital authority at all: it only fills in the fields of a `thesis` map,
+which still has to pass through `decide-intent`, the critics,
+`policy/evaluate`, and `authorization!` without exception — the same path as
+any other TradeIntent.
 
-- `get_all_positions`, `get_stock_bars` e `get_news` foram adicionados ao
-  allowlist somente-leitura do MCP após verificação contra o servidor Alpaca
-  MCP local em execução; os nomes foram confirmados via `tools/list` real, não
-  supostos.
-- O risk-snapshot é fail-closed: `daily-drawdown` vem de `last_equity`/`equity`
-  da conta (não de `get_portfolio_history`, cujo array fica vazio em contas
-  novas) e `estimated-participation` vem de `get_stock_bars` (média de volume
-  de 5 dias, feed `iex`); se qualquer uma dessas leituras falhar, o snapshot
-  é marcado inválido e a política nega.
-- `decide-intent` agora propõe `buy` ou `sell` conforme a direção do thesis;
-  não há lógica de venda a descoberto além do `side :sell` padrão de mercado
-  (o gateway/MCP tratam isso como qualquer ordem de venda). Direção `hold`,
-  confiança abaixo do limiar, ou qualquer falha no pipeline de pesquisa
-  (sem notícia, ProofRay fora do ar, JSON do LLM malformado, chaves ausentes)
-  resolvem para nenhum TradeIntent neste tick — nunca um default arriscado.
-  `tick-monitoring!` só decide `HOLD`/`EXIT` (saída total ao romper o stop);
-  não há `REDUCE` parcial.
-- Os campos de posição (`symbol`, `market_value`, `qty`) foram assumidos pelo
-  formato público conhecido da Alpaca; a conta Paper usada para validação
-  estava sem posições abertas, então o formato de item não-vazio não foi
-  confirmado empiricamente.
-- Uma decisão que fica em `SUBMISSION_PENDING` por falta de autonomia/janela
-  não é reprocessada automaticamente quando a janela abre; só novos ticks
-  a partir daquele momento despacham. Evite iniciar o orquestrador com
-  autonomia esperada antes do início da janela oficial.
+- `get_all_positions`, `get_news`, `get_option_chain`, `get_option_bars`, and
+  `get_option_latest_quote` were added to the MCP's read-only allowlist after
+  verification against the actual running local Alpaca MCP server; the tool
+  names and their input schemas were confirmed via a live `tools/list` call
+  and live sample responses, not assumed.
+- The risk snapshot is fail-closed: `daily-drawdown` comes from the account's
+  `last_equity`/`equity` (not from `get_portfolio_history`, whose array is
+  empty on new accounts), and the liquidity gate (`estimated-participation`
+  in the snapshot, historically ADV participation) is now the selected
+  option contract's own bid-ask spread as a fraction of mid — if that
+  quote, or any other required input, is unavailable, the snapshot is marked
+  invalid and policy denies.
+- `decide-intent` always buys long — a bullish thesis buys a call, a bearish
+  thesis buys a put; there is no short-selling or naked-writing path at all,
+  by construction. A `hold` direction, confidence below the threshold, no
+  contract clearing the spread/strike/expiration band, or any research
+  pipeline failure (no news, ProofRay down, malformed LLM JSON, missing
+  keys) all resolve to no TradeIntent for that tick — never a risky default.
+  `tick-monitoring!` only ever decides `HOLD`/`EXIT` (a full exit on stop
+  breach); there is no partial `REDUCE`.
+- Position fields (`symbol`, `market_value`, `qty`) were assumed from
+  Alpaca's known public format; the Paper account used for validation had no
+  open positions, so the non-empty item format was not empirically
+  confirmed.
+- A decision left at `SUBMISSION_PENDING` for lack of autonomy/an inactive
+  window is not automatically reprocessed once the window opens; only new
+  ticks from that point on will dispatch. Avoid starting the orchestrator
+  with autonomy expected before the official window actually begins.
 
-## Limites explícitos
+## Explicit limits
 
-- Cotações de ações são lidas somente pela fronteira Clojure/MCP e normalizadas
-  em evidência temporal `alpaca`, com hash e validade curta. O Flutter não
-  chama o MCP nem interpreta saída bruta como instrução.
+- Stock quotes are read only through the Clojure/MCP boundary and normalized
+  into `alpaca` temporal evidence, with a hash and a short validity window.
+  Flutter never calls the MCP nor interprets raw output as an instruction.
 
-Paper trading não comprova comportamento com capital real. Os modelos de risco
-do protótipo são limites demonstrativos, não aconselhamento financeiro nem
-framework institucional validado. Não haverá suporte a live trading.
+Paper trading does not prove behavior with real capital. The prototype's risk
+models are demonstrative limits, not financial advice or a validated
+institutional framework. Live trading will not be supported.

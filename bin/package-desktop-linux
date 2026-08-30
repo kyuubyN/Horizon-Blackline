@@ -7,7 +7,7 @@ bundle="$project_root/desktop_flutter/build/linux/x64/release/bundle"
 backend="$bundle/backend"
 
 if [[ ! -x "$flutter" ]]; then
-  echo "Flutter local nao encontrado em .tools/flutter."
+  echo "Local Flutter not found at .tools/flutter."
   exit 1
 fi
 
@@ -27,6 +27,6 @@ cp -a "$project_root/.m2" "$backend/.m2"
 find "$backend/.m2" \( -iname "settings.xml" -o -iname "*credentials*" -o -iname ".netrc" \) -delete
 cp -a "$project_root/.env.example" "$backend/.env.example"
 
-echo "Bundle criado: $bundle"
-echo "Configure ALPACA_* no ambiente ou copie backend/.env.example para backend/.env."
-echo "Nota: backend/.m2 bundles the resolved Maven jars (needed to run); nao contem settings.xml/credenciais apos a limpeza acima."
+echo "Bundle created: $bundle"
+echo "Configure ALPACA_* in the environment or copy backend/.env.example to backend/.env."
+echo "Note: backend/.m2 bundles the resolved Maven jars (needed to run); it contains no settings.xml/credentials after the cleanup above."

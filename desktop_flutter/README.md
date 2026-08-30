@@ -1,82 +1,88 @@
 # Horizon Blackline Desktop
 
-Cliente Flutter Desktop do console local. Ele nunca recebe chaves da Alpaca e nunca fala com a corretora: comunica somente com a API Clojure em `127.0.0.1:8080`.
+Flutter Desktop client for the local console. It never receives Alpaca keys and never talks to the broker: it only communicates with the Clojure API at `127.0.0.1:8080`.
 
-## Desenvolvimento
+## Development
 
-Na raiz do projeto, execute `bin/run-desktop`. O launcher sobe o nucleo local e abre o cliente Linux. Para apontar a outro nucleo local, defina `HORIZON_API_URL` antes de iniciar o Flutter.
+From the project root, run `bin/run-desktop`. The launcher starts the local core and opens the Linux client. To point at a different local core, set `HORIZON_API_URL` before starting Flutter.
 
-## Bundle Linux
+## Linux bundle
 
-Execute `bin/package-desktop-linux` na raiz. O bundle em
-`build/linux/x64/release/bundle/` inclui o executável Flutter e o sidecar
-Clojure/JVM. Ao abrir o executável, ele usa uma API já disponível em
-`127.0.0.1:8080` ou inicia apenas o `backend/bin/run-api` que veio no mesmo
-bundle.
+Run `bin/package-desktop-linux` from the root. The bundle at
+`build/linux/x64/release/bundle/` includes the Flutter executable and the
+Clojure/JVM sidecar. When the executable opens, it uses an already-available
+API at `127.0.0.1:8080` or starts only the `backend/bin/run-api` shipped in
+the same bundle.
 
-O sidecar persiste o Datomic em `XDG_DATA_HOME/horizon-blackline` (ou em
-`HORIZON_DATA_DIR`) e não inclui `.env`. Configure as credenciais Paper no
-ambiente ou copie `backend/.env.example` para `backend/.env` antes de usar o
-MCP da Alpaca. Sem essa configuração o app continua seguro: health e a demo
-MOCK funcionam, mas o gate de dispatch permanece indisponível.
+The sidecar persists Datomic at `XDG_DATA_HOME/horizon-blackline` (or at
+`HORIZON_DATA_DIR`) and does not ship `.env`. Configure the Paper credentials
+in the environment or copy `backend/.env.example` to `backend/.env` before
+using the Alpaca MCP. Without that configuration the app stays safe: health
+checks and the MOCK demo still work, but the dispatch gate stays unavailable.
 
-## Operação governada
+## Governed operation
 
-No detalhe de um BDR, o desktop expõe somente as transições locais permitidas
-pelo estado atual: iniciar monitoramento, registrar `HOLD`, encerrar e anexar
-post-mortem. A submissão, o cancelamento e a reconciliação de uma ordem Paper
-continuam no gateway Clojure/MCP, com confirmação explícita e todas as guardas
-de autorização; não existe atalho de envio ao broker pela interface.
+On a BDR's detail page, the desktop only exposes the local transitions
+allowed by its current state: start monitoring, record `HOLD`, close, and
+attach a post-mortem. Submitting, canceling, and reconciling a Paper order
+all remain in the Clojure/MCP gateway, with an explicit confirmation and
+every authorization guard — there is no shortcut to send an order to the
+broker from the UI.
 
-Além da timeline bruta, cada BDR apresenta uma leitura de decisão com os
-estágios de evidência, críticos, autorização, observação e post-mortem. Essa
-leitura é derivada dos eventos append-only; o payload original continua
-disponível para auditoria.
+Beyond the raw timeline, every BDR presents a decision narrative through the
+evidence, critics, authorization, observation, and post-mortem stages. That
+narrative is derived from the append-only events; the original payload
+remains available for audit.
 
-O botão **Rodar jornada MOCK** abre uma narrativa guiada em três atos: a recusa
-por concentração, a autorização governada e o ciclo sintético selado. Cada ato
-leva ao BDR correspondente. A jornada é explicitamente sintética e nunca chama
-a Alpaca.
+The **Run MOCK journey** button opens a guided three-act narrative: the
+concentration denial, the governed authorization, and the sealed synthetic
+cycle. Each act links to its corresponding BDR. The journey is explicitly
+synthetic and never calls Alpaca.
 
-Na seção **BDRs**, use a busca para localizar símbolo, estratégia ou ID e o
-filtro de estado para separar recusas, registros em monitoramento e decisões
-concluídas. Esses filtros são locais à interface e não alteram o histórico.
+In the **BDRs** section, use the search box to find a symbol, strategy, or ID,
+and the state filter to separate denials, records under monitoring, and
+completed decisions. These filters are local to the UI and never alter the
+history.
 
-O botão **Nova decisão** cria um BDR local, registra evidência `fixture`,
-challenge com os três críticos e uma autorização determinística. Ele identifica
-que os dados são locais/sintéticos e não aciona gateway, MCP ou corretora.
-Opcionalmente, o operador pode consultar uma cotação de ação pelo MCP local;
-ela é capturada como evidência temporal `alpaca` antes de criar o BDR. Essa
-consulta é somente leitura e ainda não autoriza ou envia ordens.
-Com essa cotação, o núcleo também registra descoberta de candidato e pesquisa
-determinística (tese, claim e limitações) antes do challenge. Essas etapas não
-fazem previsão e não têm autoridade de capital.
+The **New decision** button creates a local BDR, records `fixture` evidence,
+challenges it with the three critics, and issues a deterministic
+authorization. It clearly flags that the data is local/synthetic and never
+touches the gateway, MCP, or broker. Optionally, the operator can fetch a
+stock quote through the local MCP; it is captured as `alpaca` temporal
+evidence before the BDR is created. That lookup is read-only and still does
+not authorize or send an order. With that quote, the core also records
+deterministic candidate discovery and research (thesis, claims, and
+limitations) before the challenge. Neither step forecasts anything or has
+capital authority.
 
-A seção **Agentes** lê o registro local de workloads e mostra seus escopos.
-Ela é uma evidência operacional de menor privilégio: os manifests não incluem
-`authorize`, `alpaca:submit` nem `policy:write`.
+The **Agents** section reads the local workload registry and shows their
+scopes. It is operational evidence of least privilege: the manifests never
+include `authorize`, `alpaca:submit`, or `policy:write`.
 
-A visão geral exibe métricas locais derivadas dos BDRs: quantidade de selos,
-replays válidos e eventos auditáveis. Elas não enviam telemetria nem conteúdo
-de decisão para fora do dispositivo.
+The overview shows local metrics derived from the BDRs: number of seals,
+valid replays, and auditable events. None of it sends telemetry or decision
+content off the device.
 
-No detalhe de um BDR, o ícone de download gera uma prova local
-`horizon-blackline/audit-export@1`: o BDR completo e seu replay. Por padrão ela
-fica em `~/Documents/Horizon Blackline`; defina `HORIZON_EXPORT_DIR` para usar
-um diretório gerenciado. A exportação não inclui `.env` nem segredos.
-Ela pode ser verificada em outra máquina com
-`bin/verify-audit-export <arquivo.audit.json>`; o verificador não inicia API,
-MCP ou conexão de rede.
+On a BDR's detail page, the download icon generates a local
+`horizon-blackline/audit-export@1` proof: the full BDR plus its replay. By
+default it lands in `~/Documents/Horizon Blackline`; set
+`HORIZON_EXPORT_DIR` to use a managed directory instead. The export never
+includes `.env` or secrets. It can be verified on another machine with
+`bin/verify-audit-export <file.audit.json>`; the verifier never starts the
+API, the MCP, or any network connection.
 
-## Campanha oficial
+## Official campaign
 
-A seção **Campanha** exibe apenas o status seguro da janela, baseline e ledger
-de equity. A ativação não existe na UI: configure as variáveis `HORIZON_OFFICIAL_*`
-no ambiente ou `.env`, mantenha a conta oficial separada da conta de teste e
-use `bin/run-official-campaign-monitor` no início da janela. O monitor só lê
-equity; ele não cria decisões nem envia ordens.
+The **Campaign** section only shows the safe status of the window, the
+baseline, and the equity ledger. There is no activation control in the UI:
+configure the `HORIZON_OFFICIAL_*` variables in the environment or `.env`,
+keep the official account separate from the test account, and run
+`bin/run-official-campaign-monitor` at the start of the window. The monitor
+only ever reads equity; it never creates a decision or sends an order.
 
-A conta oficial configurada precisa ser a mesma conta Paper allowlisted pelo
-gateway; divergência bloqueia o monitor e qualquer dispatch autônomo.
+The configured official account must be the same Paper account allowlisted
+by the gateway; a mismatch blocks the monitor and any autonomous dispatch.
 
-O empacotamento de distribuicao deve incluir o nucleo JVM como sidecar local. A interface continua sem capacidade de liberar modo live; a guarda paper-only e a autorizacao permanecem no Clojure.
+The distribution package must include the JVM core as a local sidecar. The UI
+still has no way to unlock live mode; the paper-only guard and authorization
+remain in the Clojure core.

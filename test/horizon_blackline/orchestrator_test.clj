@@ -34,19 +34,27 @@
 
 (defn- val-of [x] (if (instance? clojure.lang.IDeref x) @x x))
 
-(defn- make-deps [{:keys [ap bp bars positions equity last-equity calls quote-error?
-                          news direction confidence order-status]
+;; A bullish ("buy") thesis selects a call, a bearish ("sell") thesis a put -- see
+;; orchestrator/select-option-contract!. The mock chain always returns exactly one contract of
+;; whichever type was requested, at a fixed near-the-money strike, so tests can reason about the
+;; resulting quantity/stop without needing real option pricing.
+(defn- occ-symbol [underlying option-type]
+  (str underlying "260918" (if (= option-type "call") "C" "P") "00100000"))
+
+(defn- make-deps [{:keys [ap bp positions equity last-equity calls quote-error?
+                          news direction confidence order-status option-ap option-bp]
                    :or {ap "100.00" bp "99.90" equity 100000 last-equity 100000
-                        bars {:AAPL [{:v 1000000} {:v 1000000}]} positions []
+                        positions []
                         news [{:headline "AAPL rallies on strong iPhone demand"
                                :summary "Sales beat estimates." :source "test-wire"
                                :created_at "2026-08-28T12:00:00Z"}]
-                        direction "buy" confidence 0.9 order-status "filled"}}]
+                        direction "buy" confidence 0.9 order-status "filled"
+                        option-ap "6.00" option-bp "5.90"}}]
   {:mcp-url "http://mcp.test"
    :paper-account-id "official-paper"
    :market-open! (fn [_] true)
    :initialize! (fn [_] :session)
-   :list-tools! (fn [_] [{:name "place_stock_order"} {:name "get_account_info"}])
+   :list-tools! (fn [_] [{:name "place_option_order"} {:name "get_account_info"}])
    :ask-proofray! (fn [_question _documents]
                     {:state "resolved" :sources [{:text "evidence" :source "doc:1" :relevance_score 0.9}]})
    :complete-llm! (fn [_request]
@@ -61,24 +69,27 @@
         :content [{:type "text" :text "{\"id\":\"official-paper\"}"}]}
        "get_all_positions"
        {:structuredContent {:data {:result positions}}}
-       "get_stock_bars"
-       {:structuredContent {:data {:bars (or bars {})}}}
        "get_news"
        {:structuredContent {:data {:news news}}}
        "get_stock_latest_quote"
        (if (and quote-error? (= (:symbols arguments) "BAD"))
          (throw (ex-info "quote unavailable" {:symbol (:symbols arguments)}))
          {:structuredContent {:data {:quotes {(keyword (:symbols arguments)) {:ap (val-of ap) :bp (val-of bp)}}}}})
+       "get_option_chain"
+       (let [occ (occ-symbol (:underlying_symbol arguments) (:type arguments))]
+         {:structuredContent {:data {:snapshots {(keyword occ) {:latestQuote {:ap (val-of option-ap) :bp (val-of option-bp)}}}}}})
+       "get_option_latest_quote"
+       {:structuredContent {:data {:quotes {(keyword (:symbols arguments)) {:ap (val-of option-ap) :bp (val-of option-bp)}}}}}
        "get_order_by_client_id"
        {:structuredContent {:data {:status (val-of order-status)}}}
-       "place_stock_order"
+       "place_option_order"
        (do (when calls (swap! calls conj arguments))
            {:content [{:type "text" :text "{\"status\":\"accepted\"}"}]})
        (throw (ex-info "unexpected tool" {:tool tool}))))})
 
 (deftest frozen-system-short-circuits-both-ticks
   (let [system (system)
-        deps (make-deps {:calls (atom []) :bars {}})]
+        deps (make-deps {:calls (atom [])})]
     (workflow/freeze! system "operator" "kill switch")
     (is (= {:frozen? true} (orchestrator/tick! system deps cfg campaign-config now)))
     (is (= {:frozen? true} (orchestrator/tick-monitoring! system deps now)))
@@ -87,8 +98,9 @@
 (deftest deny-path-never-reaches-dispatch
   (let [system (system)
         calls (atom [])
-        deps (make-deps {:calls calls :bars {}})
-        result (orchestrator/tick! system deps cfg campaign-config now)
+        deps (make-deps {:calls calls})
+        tiny-budget-cfg (assoc cfg :risk-budget "1")
+        result (orchestrator/tick! system deps tiny-budget-cfg campaign-config now)
         record (first (store/list-records (:store system)))]
     (is (= :DENY (:result (first (:results result)))))
     (is (= :DENIED (:state record)))
@@ -127,8 +139,8 @@
 (deftest stop-breach-dispatches-a-real-governed-closing-order
   (let [system (system)
         calls (atom [])
-        bp (atom "99.90")
-        deps (make-deps {:calls calls :bp bp})]
+        option-bp (atom "5.90")
+        deps (make-deps {:calls calls :option-bp option-bp})]
     (seed-campaign! system)
     ;; Entry: authorized and dispatched (autonomy on via seed-campaign!).
     (orchestrator/tick! system deps cfg campaign-config now)
@@ -139,15 +151,16 @@
     ;; :FILLED -> :MONITORING
     (orchestrator/tick-monitoring! system deps cfg campaign-config now)
     (is (= :MONITORING (:state (first (store/list-records (:store system))))))
-    ;; Price now below the 2% stop under a $100.00 entry (stop = $98.00) -- must trigger a real,
-    ;; separate, governed closing order, not just an internal state flip.
-    (reset! bp "97.00")
+    ;; Entry premium ~$6.00 with the default 50% option-stop-loss-pct -> stop ~$3.00. Bid now
+    ;; well below that must trigger a real, separate, governed closing order, not just an
+    ;; internal state flip.
+    (reset! option-bp "2.50")
     (orchestrator/tick-monitoring! system deps cfg campaign-config now)
     (let [records (store/list-records (:store system))
           original (first (filter #(= :POST_MORTEM_COMPLETE (:state %)) records))
           closing-order (second @calls)]
       (is (= 2 (count @calls)) "the stop breach must place a real second broker order")
-      (is (= "sell" (:side closing-order)) "closing a long position must sell, not buy again")
+      (is (= "sell" (:side closing-order)) "closing a long option means selling to close, not buying again")
       (is (= 2 (count records)) "the exit is tracked as its own BDR, not folded into the original")
       (is (some? original)))))
 
@@ -180,7 +193,7 @@
     (is (empty? (store/list-records (:store system))))
     (is (empty? @calls))))
 
-(deftest sell-direction-with-sufficient-confidence-proposes-a-sell-intent-above-entry-stop
+(deftest sell-direction-with-sufficient-confidence-buys-a-put-contract
   (let [system (system)
         calls (atom [])
         deps (make-deps {:calls calls :direction "sell" :confidence 0.9})]
@@ -188,34 +201,34 @@
     (let [result (orchestrator/tick! system deps cfg campaign-config now)
           record (first (store/list-records (:store system)))]
       (is (= :ALLOW (:result (first (:results result)))))
-      (is (= "sell" (:side (first @calls))))
+      (is (= "buy" (:side (first @calls)))
+          "options are always bought long -- a bearish thesis is expressed via a put, not a sell")
+      (is (re-find #"P00100000$" (:symbol (first @calls))) "a bearish thesis buys a put contract")
       (is (some? record)))))
 
 (def base-config (assoc (orchestrator/config (constantly nil))
-                        :order-notional-usd "1000" :stop-distance-pct "0.02"
+                        :order-notional-usd "1000" :option-stop-loss-pct "0.5"
                         :risk-budget "500" :min-confidence 0.6))
 
-(def base-candidate {:symbol "AAPL" :ask-price "100.00"})
+(def base-contract {:symbol "AAPL260918C00100000" :strike 100M
+                    :ask 6.00M :bid 5.90M :spread-pct 0.0168M :distance 0M})
 
 (deftest decide-intent-holds-produce-no-trade-intent
-  (is (nil? (orchestrator/decide-intent base-candidate {:direction "hold" :confidence 0.9}
-                                        {} base-config now))))
+  (is (nil? (orchestrator/decide-intent {:direction "hold" :confidence 0.9} base-contract base-config now))))
 
 (deftest decide-intent-low-confidence-produces-no-trade-intent
-  (is (nil? (orchestrator/decide-intent base-candidate {:direction "buy" :confidence 0.59}
-                                        {} base-config now))))
+  (is (nil? (orchestrator/decide-intent {:direction "buy" :confidence 0.59} base-contract base-config now))))
 
-(deftest decide-intent-nil-thesis-produces-no-trade-intent
-  (is (nil? (orchestrator/decide-intent base-candidate nil {} base-config now))))
+(deftest decide-intent-nil-contract-produces-no-trade-intent
+  (is (nil? (orchestrator/decide-intent {:direction "buy" :confidence 0.9} nil base-config now))))
 
-(deftest decide-intent-buy-sets-stop-below-entry
-  (let [intent (orchestrator/decide-intent base-candidate {:direction "buy" :confidence 0.9}
-                                           {} base-config now)]
+(deftest decide-intent-buys-the-contract-with-a-stop-below-premium
+  (let [intent (orchestrator/decide-intent {:direction "buy" :confidence 0.9} base-contract base-config now)]
+    (is (= :option (:asset-class intent)))
     (is (= :buy (:side intent)))
+    (is (= "AAPL260918C00100000" (:symbol intent)))
     (is (< (bigdec (:stop-price intent)) (bigdec (:entry-price intent))))))
 
-(deftest decide-intent-sell-sets-stop-above-entry
-  (let [intent (orchestrator/decide-intent base-candidate {:direction "sell" :confidence 0.9}
-                                           {} base-config now)]
-    (is (= :sell (:side intent)))
-    (is (> (bigdec (:stop-price intent)) (bigdec (:entry-price intent))))))
+(deftest decide-intent-zero-quantity-produces-no-trade-intent
+  (let [tiny-budget (assoc base-config :order-notional-usd "1")]
+    (is (nil? (orchestrator/decide-intent {:direction "buy" :confidence 0.9} base-contract tiny-budget now)))))

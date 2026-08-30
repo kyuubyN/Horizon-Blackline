@@ -43,7 +43,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Operacao recusada pelo nucleo: $error')),
+          SnackBar(content: Text('Operation rejected by the core: $error')),
         );
       }
     } finally {
@@ -54,7 +54,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('BDR auditavel'),
+      title: const Text('Auditable BDR'),
       actions: [
         IconButton(
           onPressed: () => setState(() => _data = _load()),
@@ -63,7 +63,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
         IconButton(
           onPressed: _working ? null : _exportAudit,
           icon: const Icon(Icons.download_outlined),
-          tooltip: 'Exportar prova auditavel',
+          tooltip: 'Export auditable proof',
         ),
       ],
     ),
@@ -75,7 +75,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
         }
         if (snapshot.hasError) {
           return Center(
-            child: Text('Falha ao carregar BDR: ${snapshot.error}'),
+            child: Text('Failed to load BDR: ${snapshot.error}'),
           );
         }
         final data = snapshot.data!;
@@ -109,11 +109,11 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
                         child: Text(
                           (data.replay['valid?'] == true ||
                                   data.replay['valid'] == true)
-                              ? 'Cadeia de evidencia valida'
-                              : 'Cadeia requer revisao',
+                              ? 'Valid evidence chain'
+                              : 'Chain requires review',
                         ),
                       ),
-                      Chip(label: Text('${bdr.events.length} eventos')),
+                      Chip(label: Text('${bdr.events.length} events')),
                     ],
                   ),
                 ),
@@ -123,11 +123,11 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
                 state: bdr.state,
                 busy: _working,
                 onMonitor: () => _runOperation(
-                  'Monitoramento iniciado.',
+                  'Monitoring started.',
                   () => widget.api.startMonitoring(bdr.id),
                 ),
                 onHold: () => _runOperation(
-                  'Reavaliacao HOLD registrada.',
+                  'HOLD re-evaluation recorded.',
                   () => widget.api.reevaluate(
                     bdr.id,
                     decision: 'HOLD',
@@ -135,7 +135,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
                   ),
                 ),
                 onClose: () => _runOperation(
-                  'BDR encerrado; registre o post-mortem.',
+                  'BDR closed; record the post-mortem.',
                   () => widget.api.closeBdr(
                     bdr.id,
                     reason: 'desktop-operator-close',
@@ -168,7 +168,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
                               subtitle: Text(event.at),
                               trailing: IconButton(
                                 icon: const Icon(Icons.code),
-                                tooltip: 'Ver payload',
+                                tooltip: 'View payload',
                                 onPressed: () => _payload(context, event),
                               ),
                             );
@@ -185,7 +185,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               const Text(
-                                'Intencao normalizada',
+                                'Normalized intent',
                                 style: TextStyle(
                                   fontSize: 17,
                                   fontWeight: FontWeight.w600,
@@ -234,7 +234,7 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Fechar'),
+          child: const Text('Close'),
         ),
       ],
     ),
@@ -244,25 +244,25 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Registrar post-mortem'),
+        title: const Text('Record post-mortem'),
         content: const Text(
-          'O registro sera anexado ao BDR e o selara. Confirme somente apos revisar a linha do tempo.',
+          'The record will be appended to the BDR and seal it. Confirm only after reviewing the timeline.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Voltar'),
+            child: const Text('Back'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Registrar'),
+            child: const Text('Record'),
           ),
         ],
       ),
     );
     if (approved == true) {
       await _runOperation(
-        'Post-mortem registrado e BDR selado.',
+        'Post-mortem recorded and BDR sealed.',
         () => widget.api.postMortem(
           bdrId,
           outcome: 'operator-reviewed outcome',
@@ -279,13 +279,13 @@ class _BdrDetailPageState extends State<BdrDetailPage> {
       final file = await AuditExport.save(payload, widget.bdrId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Prova auditavel salva em ${file.path}')),
+          SnackBar(content: Text('Auditable proof saved to ${file.path}')),
         );
       }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Nao foi possivel exportar: $error')),
+          SnackBar(content: Text('Could not export: $error')),
         );
       }
     } finally {
@@ -318,7 +318,7 @@ class _WorkflowActions extends StatelessWidget {
         OutlinedButton.icon(
           onPressed: busy ? null : onMonitor,
           icon: const Icon(Icons.visibility_outlined),
-          label: const Text('Iniciar monitoramento'),
+          label: const Text('Start monitoring'),
         ),
       );
     }
@@ -327,7 +327,7 @@ class _WorkflowActions extends StatelessWidget {
         OutlinedButton.icon(
           onPressed: busy ? null : onHold,
           icon: const Icon(Icons.pause_outlined),
-          label: const Text('Registrar HOLD'),
+          label: const Text('Record HOLD'),
         ),
       );
     }
@@ -336,7 +336,7 @@ class _WorkflowActions extends StatelessWidget {
         FilledButton.tonalIcon(
           onPressed: busy ? null : onClose,
           icon: const Icon(Icons.task_alt_outlined),
-          label: const Text('Encerrar BDR'),
+          label: const Text('Close BDR'),
         ),
       );
     }
@@ -345,7 +345,7 @@ class _WorkflowActions extends StatelessWidget {
         FilledButton.icon(
           onPressed: busy ? null : onPostMortem,
           icon: const Icon(Icons.auto_stories_outlined),
-          label: const Text('Registrar post-mortem'),
+          label: const Text('Record post-mortem'),
         ),
       );
     }
@@ -377,73 +377,73 @@ class _DecisionNarrative extends StatelessWidget {
     final cards = <Widget>[
       _StageCard(
         icon: Icons.article_outlined,
-        title: 'Evidencia',
+        title: 'Evidence',
         color: const Color(0xff75b7ff),
         primary:
-            evidence?.payload['source-uri']?.toString() ?? 'Nao registrada',
+            evidence?.payload['source-uri']?.toString() ?? 'Not recorded',
         secondary: evidence == null
-            ? 'Nao participa da decisao.'
-            : 'Observada: ${evidence.payload['observed-at'] ?? 'nao informado'}',
+            ? 'Not part of the decision.'
+            : 'Observed: ${evidence.payload['observed-at'] ?? 'not reported'}',
       ),
       _StageCard(
         icon: Icons.travel_explore_outlined,
-        title: 'Descoberta',
+        title: 'Discovery',
         color: const Color(0xffc2a6ff),
-        primary: discovery?.payload['symbol']?.toString() ?? 'Nao registrada',
+        primary: discovery?.payload['symbol']?.toString() ?? 'Not recorded',
         secondary: discovery == null
-            ? 'Sem candidato estruturado.'
+            ? 'No structured candidate.'
             : '${discovery.payload['discovery-method'] ?? 'candidate_set@1'} · ${discovery.at}',
       ),
       _StageCard(
         icon: Icons.menu_book_outlined,
-        title: 'Pesquisa',
+        title: 'Research',
         color: const Color(0xff9be0a1),
-        primary: research?.payload['thesis-id']?.toString() ?? 'Nao registrada',
+        primary: research?.payload['thesis-id']?.toString() ?? 'Not recorded',
         secondary: research == null
-            ? 'Sem tese estruturada.'
-            : '${(research.payload['claims'] as List?)?.length ?? 0} claims com proveniencia',
+            ? 'No structured thesis.'
+            : '${(research.payload['claims'] as List?)?.length ?? 0} claims with provenance',
       ),
       _StageCard(
         icon: Icons.groups_2_outlined,
-        title: 'Criticos',
+        title: 'Critics',
         color: const Color(0xffcf9cff),
         primary: _criticSummary(critics?.payload),
         secondary: critics == null
-            ? 'Challenge ausente.'
-            : 'Bundle registrado em ${critics.at}',
+            ? 'No challenge yet.'
+            : 'Bundle recorded at ${critics.at}',
       ),
       _StageCard(
         icon: Icons.verified_user_outlined,
-        title: 'Autorizacao',
+        title: 'Authorization',
         color: const Color(0xff65d6b3),
-        primary: authorization?.payload['result']?.toString() ?? 'PENDENTE',
+        primary: authorization?.payload['result']?.toString() ?? 'PENDING',
         secondary: _reasonSummary(authorization?.payload),
       ),
       _StageCard(
         icon: Icons.receipt_long_outlined,
-        title: 'Observacao',
+        title: 'Observation',
         color: const Color(0xffffc36a),
         primary:
-            observation?.payload['status']?.toString() ?? 'Sem efeito externo',
+            observation?.payload['status']?.toString() ?? 'No external effect',
         secondary: observation == null
-            ? 'Nenhuma ordem/fill registrado.'
-            : 'Registrada em ${observation.at}',
+            ? 'No order/fill recorded.'
+            : 'Recorded at ${observation.at}',
       ),
       _StageCard(
         icon: Icons.auto_stories_outlined,
         title: 'Post-mortem',
         color: const Color(0xffff8fac),
-        primary: postMortem?.payload['outcome']?.toString() ?? 'Ainda aberto',
+        primary: postMortem?.payload['outcome']?.toString() ?? 'Still open',
         secondary: postMortem == null
-            ? 'Aguardando encerramento.'
-            : 'Registro final selado.',
+            ? 'Waiting to close.'
+            : 'Final record sealed.',
       ),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Explicacao da decisao',
+          'Decision explanation',
           style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 10),
@@ -462,7 +462,7 @@ class _DecisionNarrative extends StatelessWidget {
 
   String _criticSummary(Map<String, dynamic>? payload) {
     final critics = payload?['critics'];
-    if (critics is! List || critics.isEmpty) return 'Nao registrados';
+    if (critics is! List || critics.isEmpty) return 'Not recorded';
     return critics
         .whereType<Map>()
         .map(
@@ -474,7 +474,7 @@ class _DecisionNarrative extends StatelessWidget {
 
   String _reasonSummary(Map<String, dynamic>? payload) {
     final reasons = payload?['reason-codes'];
-    if (reasons is! List || reasons.isEmpty) return 'Sem breaches de politica.';
+    if (reasons is! List || reasons.isEmpty) return 'No policy breaches.';
     return reasons.join(' · ');
   }
 }

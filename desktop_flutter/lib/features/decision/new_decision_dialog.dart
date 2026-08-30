@@ -59,7 +59,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
     if (value == null ||
         double.tryParse(value) == null ||
         double.parse(value) <= 0) {
-      return 'Informe um decimal positivo.';
+      return 'Enter a positive decimal.';
     }
     return null;
   }
@@ -155,7 +155,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Nucleo recusou a decisao: $error')),
+          SnackBar(content: Text('Core rejected the decision: $error')),
         );
       }
     } finally {
@@ -190,7 +190,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Cotacao $symbol capturada como evidencia Alpaca.'),
+            content: Text('$symbol quote captured as Alpaca evidence.'),
           ),
         );
       }
@@ -198,7 +198,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Nao foi possivel consultar a cotacao: $error'),
+            content: Text('Could not fetch the quote: $error'),
           ),
         );
       }
@@ -222,7 +222,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Nova decisao governada'),
+    title: const Text('New governed decision'),
     content: SizedBox(
       width: 620,
       child: Form(
@@ -232,18 +232,18 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Esta jornada usa uma evidência fixture local. Ela cria e desafia o BDR, mas não envia ordens à corretora.',
+                'This journey uses local fixture evidence. It creates and challenges the BDR, but never sends an order to the broker.',
               ),
               const SizedBox(height: 16),
               _row(
                 _field(
                   _symbol,
-                  'Símbolo',
+                  'Symbol',
                   validator: (value) => value == null || value.trim().isEmpty
-                      ? 'Informe o símbolo.'
+                      ? 'Enter the symbol.'
                       : null,
                 ),
-                _field(_quantity, 'Quantidade', validator: _decimal),
+                _field(_quantity, 'Quantity', validator: _decimal),
               ),
               Align(
                 alignment: Alignment.centerLeft,
@@ -257,33 +257,33 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
                       : const Icon(Icons.query_stats_outlined),
                   label: Text(
                     _quoteEvidence == null
-                        ? 'Consultar cotacao Alpaca (somente leitura)'
-                        : 'Cotacao Alpaca capturada',
+                        ? 'Fetch Alpaca quote (read-only)'
+                        : 'Alpaca quote captured',
                   ),
                 ),
               ),
               const SizedBox(height: 8),
               _row(
-                _field(_entry, 'Preço de entrada', validator: _decimal),
-                _field(_stop, 'Preço de stop', validator: _decimal),
+                _field(_entry, 'Entry price', validator: _decimal),
+                _field(_stop, 'Stop price', validator: _decimal),
               ),
               const SizedBox(height: 16),
               const Text(
-                'Snapshot local para avaliação de risco',
+                'Local snapshot for risk evaluation',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               _row(
-                _field(_symbolWeight, 'Peso pós-trade', validator: _decimal),
-                _field(_grossExposure, 'Exposição bruta', validator: _decimal),
+                _field(_symbolWeight, 'Post-trade weight', validator: _decimal),
+                _field(_grossExposure, 'Gross exposure', validator: _decimal),
               ),
               _row(
                 _field(
                   _participation,
-                  'Participação estimada',
+                  'Estimated participation',
                   validator: _decimal,
                 ),
-                _field(_drawdown, 'Drawdown diário', validator: _decimal),
+                _field(_drawdown, 'Daily drawdown', validator: _decimal),
               ),
             ],
           ),
@@ -293,7 +293,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
     actions: [
       TextButton(
         onPressed: _submitting ? null : () => Navigator.pop(context),
-        child: const Text('Cancelar'),
+        child: const Text('Cancel'),
       ),
       FilledButton.icon(
         onPressed: _submitting ? null : _submit,
@@ -303,7 +303,7 @@ class _NewDecisionDialogState extends State<NewDecisionDialog> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             : const Icon(Icons.gavel_outlined),
-        label: const Text('Avaliar e autorizar'),
+        label: const Text('Evaluate and authorize'),
       ),
     ],
   );

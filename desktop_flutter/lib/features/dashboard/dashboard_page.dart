@@ -100,18 +100,18 @@ class _DashboardPageState extends State<DashboardPage> {
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Congelar operacao'),
+        title: const Text('Freeze operation'),
         content: const Text(
-          'Isso bloqueia novas autorizacoes locais. A acao e registrada e exige revisao para retomar.',
+          'This blocks new local authorizations. The action is logged and requires review to resume.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Voltar'),
+            child: const Text('Back'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Congelar'),
+            child: const Text('Freeze'),
           ),
         ],
       ),
@@ -143,7 +143,7 @@ class _DashboardPageState extends State<DashboardPage> {
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Decisao ${result.authorization['result']} registrada.'),
+        content: Text('Decision ${result.authorization['result']} recorded.'),
       ),
     );
     await Navigator.push(
@@ -181,7 +181,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _error(Object error) => ScaffoldMessenger.of(
     context,
-  ).showSnackBar(SnackBar(content: Text('Nao foi possivel concluir: $error')));
+  ).showSnackBar(SnackBar(content: Text('Could not complete: $error')));
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -305,7 +305,7 @@ class _Console extends StatelessWidget {
               NavigationRailDestination(
                 icon: Icon(Icons.dashboard_outlined),
                 selectedIcon: Icon(Icons.dashboard),
-                label: Text('Visao geral'),
+                label: Text('Overview'),
               ),
               NavigationRailDestination(
                 icon: Icon(Icons.fact_check_outlined),
@@ -313,15 +313,15 @@ class _Console extends StatelessWidget {
               ),
               NavigationRailDestination(
                 icon: Icon(Icons.shield_outlined),
-                label: Text('Controles'),
+                label: Text('Controls'),
               ),
               NavigationRailDestination(
                 icon: Icon(Icons.hub_outlined),
-                label: Text('Agentes'),
+                label: Text('Agents'),
               ),
               NavigationRailDestination(
                 icon: Icon(Icons.emoji_events_outlined),
-                label: Text('Campanha'),
+                label: Text('Campaign'),
               ),
             ],
           ),
@@ -341,14 +341,14 @@ class _Console extends StatelessWidget {
                         children: [
                           Text(
                             section == 0
-                                ? 'Bom ter voce no controle.'
+                                ? 'Good to have you in control.'
                                 : section == 1
-                                ? 'Decisoes registradas.'
+                                ? 'Decisions recorded.'
                                 : section == 2
-                                ? 'Controles de protecao.'
+                                ? 'Protection controls.'
                                 : section == 3
-                                ? 'Fronteiras dos agentes.'
-                                : 'Campanha oficial Paper.',
+                                ? 'Agent boundaries.'
+                                : 'Official Paper campaign.',
                             style: TextStyle(
                               fontSize: 28,
                               fontWeight: FontWeight.w700,
@@ -356,13 +356,13 @@ class _Console extends StatelessWidget {
                           ),
                           SizedBox(height: 4),
                           Text(
-                            'Decisoes governadas, com rastreabilidade local.',
+                            'Governed decisions, with local traceability.',
                           ),
                         ],
                       ),
                     ),
                     _Pill(
-                      label: paperOnly ? 'PAPER ONLY' : 'AMBIENTE INVALIDO',
+                      label: paperOnly ? 'PAPER ONLY' : 'INVALID ENVIRONMENT',
                       color: paperOnly ? Colors.teal : Colors.red,
                     ),
                     const SizedBox(width: 8),
@@ -371,7 +371,7 @@ class _Console extends StatelessWidget {
                     IconButton(
                       onPressed: working ? null : onRefresh,
                       icon: const Icon(Icons.refresh),
-                      tooltip: 'Atualizar',
+                      tooltip: 'Refresh',
                     ),
                   ],
                 ),
@@ -404,7 +404,7 @@ class _Console extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Operacao protegida',
+                                'Protected operation',
                                 style: TextStyle(
                                   fontSize: 21,
                                   fontWeight: FontWeight.w700,
@@ -412,7 +412,7 @@ class _Console extends StatelessWidget {
                               ),
                               SizedBox(height: 6),
                               Text(
-                                'Toda ordem exige BDR, limites deterministas e autorizacao antes de chegar ao gateway.',
+                                'Every order requires a BDR, deterministic limits, and authorization before it reaches the gateway.',
                               ),
                             ],
                           ),
@@ -433,47 +433,47 @@ class _Console extends StatelessWidget {
                     children: [
                       _Metric(
                         icon: Icons.health_and_safety_outlined,
-                        label: 'Nucleo',
-                        value: '${data.health['status'] ?? 'indisponivel'}',
+                        label: 'Core',
+                        value: '${data.health['status'] ?? 'unavailable'}',
                         color: Colors.green,
                       ),
                       _Metric(
                         icon: Icons.fact_check_outlined,
-                        label: 'BDRs registrados',
+                        label: 'BDRs recorded',
                         value: '${data.bdrs.length}',
                         color: Colors.indigoAccent,
                       ),
                       _Metric(
                         icon: Icons.lock_outline,
                         label: 'Kill switch',
-                        value: frozen ? 'CONGELADO' : 'ATIVO',
+                        value: frozen ? 'FROZEN' : 'ACTIVE',
                         color: frozen ? Colors.orange : Colors.teal,
                       ),
                       _Metric(
                         icon: Icons.verified_user_outlined,
-                        label: 'Prontidao',
+                        label: 'Readiness',
                         value: data.ready['ready?'] == true
-                            ? 'PRONTO'
-                            : 'CONFIGURAR',
+                            ? 'READY'
+                            : 'CONFIGURE',
                         color: data.ready['ready?'] == true
                             ? Colors.teal
                             : Colors.orangeAccent,
                       ),
                       _Metric(
                         icon: Icons.lock_person_outlined,
-                        label: 'BDRs selados',
+                        label: 'Sealed BDRs',
                         value: '${data.metrics['sealed-total'] ?? 0}',
                         color: Colors.pinkAccent,
                       ),
                       _Metric(
                         icon: Icons.link_outlined,
-                        label: 'Replays validos',
+                        label: 'Valid replays',
                         value: '${data.metrics['replay-valid-total'] ?? 0}',
                         color: Colors.lightBlueAccent,
                       ),
                       _Metric(
                         icon: Icons.timeline_outlined,
-                        label: 'Eventos auditaveis',
+                        label: 'Auditable events',
                         value: '${data.metrics['events-total'] ?? 0}',
                         color: Colors.amberAccent,
                       ),
@@ -502,7 +502,7 @@ class _Console extends StatelessWidget {
                     children: [
                       Text(
                         section == 1
-                            ? 'Todos os Decision Records'
+                            ? 'All Decision Records'
                             : 'Decision Records',
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
@@ -510,21 +510,21 @@ class _Console extends StatelessWidget {
                       OutlinedButton.icon(
                         onPressed: working || frozen ? null : onDemo,
                         icon: const Icon(Icons.science_outlined),
-                        label: const Text('Rodar jornada MOCK'),
+                        label: const Text('Run MOCK journey'),
                       ),
                       if (section == 1) ...[
                         const SizedBox(width: 12),
                         FilledButton.icon(
                           onPressed: working || frozen ? null : onNewDecision,
                           icon: const Icon(Icons.add_task_outlined),
-                          label: const Text('Nova decisao'),
+                          label: const Text('New decision'),
                         ),
                       ],
                       const SizedBox(width: 12),
                       FilledButton.tonalIcon(
                         onPressed: working || frozen ? null : onFreeze,
                         icon: const Icon(Icons.pause_circle_outline),
-                        label: const Text('Congelar sistema'),
+                        label: const Text('Freeze system'),
                       ),
                     ],
                   ),
@@ -541,7 +541,7 @@ class _Console extends StatelessWidget {
                             onChanged: onSearchChanged,
                             decoration: const InputDecoration(
                               prefixIcon: Icon(Icons.search),
-                              hintText: 'Buscar simbolo, estrategia ou BDR',
+                              hintText: 'Search symbol, strategy, or BDR',
                               border: OutlineInputBorder(),
                               isDense: true,
                             ),
@@ -564,7 +564,7 @@ class _Console extends StatelessWidget {
                         ),
                         const SizedBox(width: 16),
                         Text(
-                          '${filteredBdrs.length} de ${data.bdrs.length} registros',
+                          '${filteredBdrs.length} of ${data.bdrs.length} records',
                           style: const TextStyle(color: Colors.grey),
                         ),
                       ],
@@ -578,7 +578,7 @@ class _Console extends StatelessWidget {
                         ? _CampaignLedger(campaign: data.campaign)
                         : filteredBdrs.isEmpty
                         ? const Center(
-                            child: Text('Nenhum BDR para este filtro.'),
+                            child: Text('No BDR matches this filter.'),
                           )
                         : ListView.separated(
                             itemCount: filteredBdrs.length,
@@ -653,7 +653,7 @@ class _DemoJourneyDialog extends StatelessWidget {
         children: [
           Icon(Icons.route_outlined),
           SizedBox(width: 10),
-          Text('Jornada MOCK concluida'),
+          Text('MOCK journey completed'),
         ],
       ),
       content: SizedBox(
@@ -663,44 +663,44 @@ class _DemoJourneyDialog extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Dados sintéticos. Nenhuma ordem ou consulta foi enviada à Alpaca.',
+              'Synthetic data. No order or query was sent to Alpaca.',
             ),
             const SizedBox(height: 18),
             _JourneyStep(
               number: '01',
-              title: 'A tese é desafiada',
-              detail: 'Concentração excedida: $denialReason',
+              title: 'The thesis is challenged',
+              detail: 'Concentration exceeded: $denialReason',
               color: Colors.redAccent,
               action: TextButton(
                 onPressed: denied['bdr-id'] == null
                     ? null
                     : () => onOpen(denied['bdr-id'].toString()),
-                child: const Text('Ver recusa'),
+                child: const Text('View denial'),
               ),
             ),
             _JourneyStep(
               number: '02',
-              title: 'A intenção passa pelos engines',
+              title: 'The intent clears the engines',
               detail:
-                  'Autorização: ${(authorized['authorization'] as Map?)?['result'] ?? 'ALLOW'}',
+                  'Authorization: ${(authorized['authorization'] as Map?)?['result'] ?? 'ALLOW'}',
               color: Colors.tealAccent,
               action: TextButton(
                 onPressed: authorized['bdr-id'] == null
                     ? null
                     : () => onOpen(authorized['bdr-id'].toString()),
-                child: const Text('Ver autorização'),
+                child: const Text('View authorization'),
               ),
             ),
             _JourneyStep(
               number: '03',
-              title: 'Ciclo é observado e encerrado',
-              detail: 'Execução sintética, HOLD e post-mortem com BDR selado.',
+              title: 'The cycle is observed and closed',
+              detail: 'Synthetic execution, HOLD, and a post-mortem with a sealed BDR.',
               color: const Color(0xffffb454),
               action: FilledButton(
                 onPressed: lifecycle['bdr-id'] == null
                     ? null
                     : () => onOpen(lifecycle['bdr-id'].toString()),
-                child: const Text('Abrir prova final'),
+                child: const Text('Open final proof'),
               ),
             ),
           ],
@@ -709,7 +709,7 @@ class _DemoJourneyDialog extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Fechar'),
+          child: const Text('Close'),
         ),
       ],
     );
@@ -772,18 +772,18 @@ class _Offline extends StatelessWidget {
   final VoidCallback onRetry;
   final Object? error;
   String get _title => error is BackendUnavailable
-      ? 'Nucleo local indisponivel'
-      : 'Nao foi possivel falar com o nucleo';
+      ? 'Local core unavailable'
+      : 'Could not reach the core';
 
   String get _guidance {
     if (error is BackendUnavailable) {
       final unavailable = error! as BackendUnavailable;
       if (unavailable.issue == BackendIssue.sidecarNotFound) {
-        return 'Abra o app pelo bundle de release ou defina HORIZON_BACKEND_EXECUTABLE para o sidecar local.';
+        return 'Open the app from the release bundle or set HORIZON_BACKEND_EXECUTABLE for the local sidecar.';
       }
-      return 'O sidecar foi encontrado, mas nao concluiu o boot. Verifique Java, permissao de execucao e o diretorio de dados local.';
+      return 'The sidecar was found but did not finish booting. Check Java, execute permissions, and the local data directory.';
     }
-    return 'Confirme que a API local esta ativa em $apiUrl. Configuracao Paper incompleta aparece em Controles depois que o nucleo inicia.';
+    return 'Confirm the local API is running at $apiUrl. An incomplete Paper configuration shows up under Controls once the core starts.';
   }
 
   @override
@@ -808,13 +808,13 @@ class _Offline extends StatelessWidget {
               FilledButton.icon(
                 onPressed: onRetry,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Tentar novamente'),
+                label: const Text('Retry'),
               ),
               if (error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text(
-                    'Diagnostico: $error',
+                    'Diagnostics: $error',
                     style: const TextStyle(fontSize: 11, color: Colors.grey),
                     maxLines: 2,
                   ),
@@ -860,8 +860,8 @@ class _ControlSummary extends StatelessWidget {
                   children: [
                     Text(
                       frozen
-                          ? 'Novas entradas congeladas'
-                          : 'Barreiras de capital ativas',
+                          ? 'New entries frozen'
+                          : 'Capital guardrails active',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w700,
@@ -870,8 +870,8 @@ class _ControlSummary extends StatelessWidget {
                     const SizedBox(height: 6),
                     Text(
                       frozen
-                          ? 'A reconciliação e a auditoria continuam disponíveis; somente novos riscos são bloqueados.'
-                          : 'Paper-only, autorização com TTL, hash da intenção, idempotência e replay são exigidos antes da execução.',
+                          ? 'Reconciliation and auditing remain available; only new risk is blocked.'
+                          : 'Paper-only, a TTL\'d authorization, intent hash, idempotency, and replay are all required before execution.',
                     ),
                   ],
                 ),
@@ -889,7 +889,7 @@ class _ControlSummary extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  ready ? 'Gateway Paper pronto para os gates locais.' : 'Dispatch bloqueado ate a configuracao Paper estar completa.',
+                  ready ? 'Paper gateway ready for the local gates.' : 'Dispatch blocked until the Paper configuration is complete.',
                 ),
               ),
             ],
@@ -897,12 +897,12 @@ class _ControlSummary extends StatelessWidget {
           if (!ready) ...[
             const SizedBox(height: 10),
             Text(
-              'Faltando: ${missing.join(' · ')}',
+              'Missing: ${missing.join(' · ')}',
               style: const TextStyle(color: Color(0xffffc5d6)),
             ),
             const SizedBox(height: 6),
             const Text(
-              'Configure somente no ambiente do sidecar ou em backend/.env; a interface nunca solicita ou persiste chaves.',
+              'Configure this only in the sidecar\'s environment or backend/.env; the UI never asks for or stores keys.',
             ),
           ],
         ],
@@ -936,8 +936,8 @@ class _AgentRegistry extends StatelessWidget {
                 children: [
                   Text(
                     valid
-                        ? 'Registro de agentes valido'
-                        : 'Registro de agentes invalido',
+                        ? 'Agent registry valid'
+                        : 'Agent registry invalid',
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
@@ -945,7 +945,7 @@ class _AgentRegistry extends StatelessWidget {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    '${entries.length} workloads declarados. Os escopos proibidos permanecem visíveis para auditoria.',
+                    '${entries.length} declared workloads. Forbidden scopes stay visible for audit.',
                   ),
                 ],
               ),
@@ -977,12 +977,12 @@ class _OfficialCampaign extends StatelessWidget {
     final baseline = campaign['baseline-captured?'] == true;
     final autonomy = campaign['autonomy-enabled?'] == true;
     final status = !enabled
-        ? 'Desligada'
+        ? 'Disabled'
         : !active
-        ? 'Aguardando janela ET'
+        ? 'Waiting for the ET window'
         : baseline
-        ? 'Em medicao'
-        : 'Pronta para baseline';
+        ? 'Measuring'
+        : 'Ready for baseline';
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(22),
@@ -993,25 +993,25 @@ class _OfficialCampaign extends StatelessWidget {
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(status, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
-              Text('Janela: ${campaign['starts-at'] ?? 'não configurada'} → ${campaign['ends-at'] ?? 'não configurada'}'),
+              Text('Window: ${campaign['starts-at'] ?? 'not configured'} → ${campaign['ends-at'] ?? 'not configured'}'),
             ])),
-            _Pill(label: autonomy ? 'AUTONOMIA CONFIGURADA' : 'AUTONOMIA DESLIGADA', color: autonomy ? Colors.orangeAccent : Colors.grey),
+            _Pill(label: autonomy ? 'AUTONOMY CONFIGURED' : 'AUTONOMY DISABLED', color: autonomy ? Colors.orangeAccent : Colors.grey),
           ]),
           const Divider(height: 28),
           Text(enabled
-              ? 'Baseline e snapshots consultam somente equity da conta Paper oficial. Nenhuma dessas ações cria ordem.'
-              : 'Para ativar, configure a conta oficial e a janela UTC no ambiente. O app não permite ativação por interface.'),
+              ? 'Baseline and snapshots only read the official Paper account\'s equity. Neither action creates an order.'
+              : 'To enable, configure the official account and the UTC window in the environment. The app does not allow enabling this from the UI.'),
           const SizedBox(height: 14),
           Wrap(spacing: 10, runSpacing: 8, children: [
             FilledButton.tonalIcon(
               onPressed: busy || !active || baseline ? null : onBaseline,
               icon: const Icon(Icons.flag_outlined),
-              label: const Text('Capturar baseline'),
+              label: const Text('Capture baseline'),
             ),
             OutlinedButton.icon(
               onPressed: busy || !active || !baseline ? null : onSnapshot,
               icon: const Icon(Icons.monitor_heart_outlined),
-              label: const Text('Capturar equity'),
+              label: const Text('Capture equity'),
             ),
           ]),
         ]),
@@ -1027,15 +1027,15 @@ class _CampaignLedger extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pnl = campaign['pnl'] as Map<String, dynamic>?;
-    if (pnl == null) return const Center(child: Text('Nenhum baseline oficial capturado ainda.'));
+    if (pnl == null) return const Center(child: Text('No official baseline captured yet.'));
     return Padding(
       padding: const EdgeInsets.all(22),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Ledger de equity', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        const Text('Equity ledger', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
         const SizedBox(height: 16),
         Wrap(spacing: 18, runSpacing: 18, children: [
           _CampaignMetric(label: 'Baseline', value: 'US\$${pnl['baseline-equity']}'),
-          _CampaignMetric(label: 'Equity atual', value: 'US\$${pnl['latest-equity']}'),
+          _CampaignMetric(label: 'Current equity', value: 'US\$${pnl['latest-equity']}'),
           _CampaignMetric(label: 'P&L', value: 'US\$${pnl['pnl']}'),
           _CampaignMetric(label: 'Snapshots', value: '${pnl['snapshot-count']}'),
         ]),
@@ -1060,7 +1060,7 @@ class _AgentRegistryList extends StatelessWidget {
   Widget build(BuildContext context) {
     final entries = agents['agents'] as List<dynamic>? ?? const [];
     if (entries.isEmpty) {
-      return const Center(child: Text('Nenhum agente registrado.'));
+      return const Center(child: Text('No agent registered.'));
     }
     return ListView.separated(
       padding: const EdgeInsets.all(12),
@@ -1078,9 +1078,9 @@ class _AgentRegistryList extends StatelessWidget {
           title: Text(
             '${agent['agent-id'] ?? agent['agent_id'] ?? 'agent'} · v${agent['version'] ?? 'n/a'}',
           ),
-          subtitle: Text('Permitido: $scopes\nProibido: $forbidden'),
+          subtitle: Text('Allowed: $scopes\nForbidden: $forbidden'),
           isThreeLine: true,
-          trailing: const _Pill(label: 'SEM BROKER', color: Color(0xff75b7ff)),
+          trailing: const _Pill(label: 'NO BROKER ACCESS', color: Color(0xff75b7ff)),
         );
       },
     );

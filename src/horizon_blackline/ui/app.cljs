@@ -14,12 +14,12 @@
 
 (defn show-replay [replay]
   (set! (.-textContent (by-id "replay-result"))
-        (str "Integridade: " (if (aget replay "valid?") "VALIDA" "INVALIDA")
-             " | eventos: " (count (array-seq (aget replay "events"))))))
+        (str "Integrity: " (if (aget replay "valid?") "VALID" "INVALID")
+             " | events: " (count (array-seq (aget replay "events"))))))
 
 (defn freeze-system []
-  (when (js/confirm "Congelar novas entradas em Paper trading?")
-    (let [reason (or (js/prompt "Motivo do kill switch:") "operator-request")]
+  (when (js/confirm "Freeze new entries on Paper trading?")
+    (let [reason (or (js/prompt "Kill switch reason:") "operator-request")]
       (-> (js/fetch "/v1/system/freeze"
                     #js {:method "POST"
                          :headers #js {"Content-Type" "application/json"}
@@ -27,8 +27,8 @@
           (.then (fn [_] (start)))))))
 
 (defn unfreeze-system []
-  (when (js/confirm "Descongelar o sistema e voltar a permitir novas entradas?")
-    (let [reason (or (js/prompt "Motivo do unfreeze:") "operator-request")]
+  (when (js/confirm "Unfreeze the system and allow new entries again?")
+    (let [reason (or (js/prompt "Unfreeze reason:") "operator-request")]
       (-> (js/fetch "/v1/system/unfreeze"
                     #js {:method "POST"
                          :headers #js {"Content-Type" "application/json"}
@@ -39,24 +39,24 @@
 (defn render [health system records]
   (set! (.-innerHTML (by-id "app"))
         (str "<main><header><p class='eyebrow'>HORIZON BLACKLINE</p>"
-             "<h1>Autoridade de capital verificável</h1>"
-             "<p>Modelos propõem. Engines calculam. Blackline autoriza. Alpaca executa.</p></header>"
+             "<h1>Verifiable capital authority</h1>"
+             "<p>Models propose. Engines calculate. Blackline authorizes. Alpaca executes.</p></header>"
              "<section class='status'><span class='dot'></span><strong>PAPER ONLY</strong>"
-             "<span>API: " (if (= "ok" (aget health "status")) "online" "indisponível") "</span></section>"
-             "<section class='freeze'><strong>Kill switch: " (if (aget system "frozen?") "ATIVO" "pronto") "</strong>"
+             "<span>API: " (if (= "ok" (aget health "status")) "online" "unavailable") "</span></section>"
+             "<section class='freeze'><strong>Kill switch: " (if (aget system "frozen?") "ACTIVE" "ready") "</strong>"
              (when (aget system "frozen?") (str " <span>" (escape-html (aget system "reason")) "</span>"))
              (if (aget system "frozen?")
-               "<button id='unfreeze-button'>Descongelar</button>"
-               "<button id='freeze-button'>Congelar entradas</button>")
+               "<button id='unfreeze-button'>Unfreeze</button>"
+               "<button id='freeze-button'>Freeze entries</button>")
              "</section>"
-             "<section class='grid'><article><h2>Decisão</h2><p>" (count (array-seq records)) " BDR(s) persistidos no Datomic.</p></article>"
-             "<article><h2>Capital Authority</h2><p>Risco, sizing e concentração são determinísticos.</p></article>"
-             "<article><h2>Execução</h2><p>O gateway usa outbox idempotente e MCP somente em paper.</p></article></section>"
-             "<section class='timeline'><h2>Jornada governada</h2><ol><li>DISCOVER</li><li>RESEARCH</li><li>CHALLENGE</li><li>AUTHORIZE</li><li>EXECUTE</li><li>OBSERVE</li></ol>"
-             "<h3>BDRs recentes</h3><ul class='bdrs'>" (apply str (map bdr-row (array-seq records))) "</ul>"
-             "<p id='replay-result' class='hint'>Selecione um BDR para verificar a cadeia de hashes.</p>"
-             "<button id='demo-button'>Gerar jornada demo (MOCK)</button>"
-             "<p class='hint'>Esta tela não envia ordens. Ela exibirá BDRs e recibos do gateway.</p></section></main>"))
+             "<section class='grid'><article><h2>Decision</h2><p>" (count (array-seq records)) " BDR(s) persisted in Datomic.</p></article>"
+             "<article><h2>Capital Authority</h2><p>Risk, sizing, and concentration are deterministic.</p></article>"
+             "<article><h2>Execution</h2><p>The gateway uses an idempotent outbox and the MCP paper-only.</p></article></section>"
+             "<section class='timeline'><h2>Governed journey</h2><ol><li>DISCOVER</li><li>RESEARCH</li><li>CHALLENGE</li><li>AUTHORIZE</li><li>EXECUTE</li><li>OBSERVE</li></ol>"
+             "<h3>Recent BDRs</h3><ul class='bdrs'>" (apply str (map bdr-row (array-seq records))) "</ul>"
+             "<p id='replay-result' class='hint'>Select a BDR to verify its hash chain.</p>"
+             "<button id='demo-button'>Run demo journey (MOCK)</button>"
+             "<p class='hint'>This screen never sends orders. It only displays BDRs and gateway receipts.</p></section></main>"))
   (.addEventListener (by-id "demo-button") "click"
                      (fn [_]
                        (.then (js/fetch "/v1/demo/run" #js {:method "POST"})

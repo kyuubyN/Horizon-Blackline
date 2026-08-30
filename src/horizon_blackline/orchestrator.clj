@@ -48,11 +48,21 @@
     :risk-budget (or (getenv "HORIZON_RISK_BUDGET_USD") "500")
     :max-symbol-weight (or (getenv "HORIZON_MAX_SYMBOL_WEIGHT") "0.05")
     :max-gross-exposure (or (getenv "HORIZON_MAX_GROSS_EXPOSURE") "0.20")
-    :max-adv-participation (or (getenv "HORIZON_MAX_ADV_PARTICIPATION") "0.01")
+    ;; Repurposed for the options-only strategy: this is now the max acceptable bid-ask
+    ;; spread (as a fraction of mid) on the selected option contract, not ADV participation --
+    ;; see select-option-contract!/build-risk-snapshot. 0.15 is permissive on purpose since
+    ;; even liquid single-name option spreads commonly run wider than an equivalent stock's.
+    :max-adv-participation (or (getenv "HORIZON_MAX_ADV_PARTICIPATION") "0.15")
     :hard-drawdown-limit (or (getenv "HORIZON_MAX_DRAWDOWN") "0.03")
-    :stop-distance-pct (or (getenv "HORIZON_STOP_DISTANCE_PCT") "0.02")
     :order-notional-usd (or (getenv "HORIZON_ORDER_NOTIONAL_USD") "1000")
     :min-confidence (probability-double (getenv "HORIZON_MIN_CONFIDENCE") 0.6)
+    ;; Every strategy here trades single-leg long options (buy calls for a bullish thesis, buy
+    ;; puts for bearish) -- never naked/short options, so max loss is always bounded at the
+    ;; premium paid. See select-option-contract!/decide-intent below.
+    :option-stop-loss-pct (or (getenv "HORIZON_OPTION_STOP_LOSS_PCT") "0.5")
+    :option-expiration-min-days (positive-long (getenv "HORIZON_OPTION_EXPIRATION_MIN_DAYS") 14)
+    :option-expiration-max-days (positive-long (getenv "HORIZON_OPTION_EXPIRATION_MAX_DAYS") 45)
+    :option-strike-band-pct (or (getenv "HORIZON_OPTION_STRIKE_BAND_PCT") "0.05")
     :paper? (truthy? (getenv "ALPACA_PAPER_TRADE"))}))
 
 (defn policy-bundle [config]
@@ -102,36 +112,33 @@
                         {} positions)
      :captured-at (str now)}))
 
-(defn- average-daily-volume! [deps symbol]
-  (try
-    (let [session ((:initialize! deps) (:mcp-url deps))
-          result ((:call-tool! deps) session "get_stock_bars" {:symbols symbol :timeframe "1Day" :days 5 :feed "iex"})
-          bars (get-in result [:structuredContent :data :bars (keyword symbol)])
-          volumes (keep :v bars)]
-      (when (seq volumes)
-        (safe-div (reduce + 0M (map policy/decimal volumes)) (count volumes) 4 RoundingMode/HALF_UP)))
-    (catch Exception _ nil)))
-
 (defn build-risk-snapshot
-  "Real fail-closed risk snapshot from live account/position/volume data.
+  "Real fail-closed risk snapshot from live account/position data.
    :valid? is false whenever any real input could not be obtained; the caller
    must feed that into policy/evaluate as :snapshot-valid? so a missing input
-   denies instead of silently defaulting."
-  [deps account symbol side quantity entry-price now]
-  (let [equity (:equity account)
+   denies instead of silently defaulting.
+
+   Every order here is a single-leg long option contract (100-share multiplier), so
+   :quantity is a contract count and dollar exposure is quantity*entry-price*100 -- and the
+   liquidity gate reuses the same :estimated-participation/:max-adv-participation fields as
+   the (retired) stock path, but the number in them is now the contract's own bid-ask spread
+   as a fraction of mid, not ADV participation. :spread-pct comes from the contract the caller
+   already selected (select-option-contract! below) so this never re-fetches a quote."
+  [account symbol side quantity entry-price spread-pct now]
+  (let [multiplier 100M
+        equity (:equity account)
         existing (get (:positions account) symbol 0M)
-        notional (* (policy/decimal quantity) (policy/decimal entry-price))
+        notional (* (policy/decimal quantity) (policy/decimal entry-price) multiplier)
         signed-notional (if (= side :buy) notional (- notional))
         projected-symbol-value (+ existing signed-notional)
         other-gross (reduce + 0M (map (fn [[sym value]] (if (= sym symbol) 0M (abs value)))
                                        (:positions account)))
         gross (+ other-gross (abs projected-symbol-value))
-        adv (average-daily-volume! deps symbol)
-        participation (when (and adv (pos? adv)) (safe-div (policy/decimal quantity) adv))
+        participation spread-pct
         last-equity (:last-equity account)
         drawdown (when (and last-equity (pos? last-equity))
                    (max 0M (safe-div (- last-equity equity) last-equity)))
-        valid? (boolean (and equity (pos? equity) (:buying-power account) adv participation drawdown))]
+        valid? (boolean (and equity (pos? equity) (:buying-power account) participation drawdown))]
     {:snapshot {:account-id (:account-id account)
                 :equity (str equity)
                 :buying-power (str (:buying-power account))
@@ -143,41 +150,84 @@
                 :source-digest (str "sha256:" (bdr/sha256 (canonical/encode account)))}
      :valid? valid?}))
 
+(defn- parse-occ-symbol
+  "Parses an OCC option symbol (e.g. \"AAPL260909C00220000\") into its root/expiration/type/
+   strike. Format: root (1-6 letters) + YYMMDD + C|P + strike*1000 zero-padded to 8 digits."
+  [occ]
+  (when-let [[_ root date cp strike] (re-matches #"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$" occ)]
+    {:root root
+     :expiration (str "20" (subs date 0 2) "-" (subs date 2 4) "-" (subs date 4 6))
+     :type (if (= cp "C") :call :put)
+     :strike (/ (bigdec (Long/parseLong strike)) 1000M)}))
+
+(defn select-option-contract!
+  "Picks the near-the-money contract (within config's strike band, 14-45 DTE by default) with
+   a live two-sided quote and an acceptable bid-ask spread. Returns nil (no viable intent) when
+   nothing in the chain clears the spread gate -- fail-closed, same as a missing stock quote
+   used to short-circuit decide-intent."
+  [deps now underlying option-type underlying-price config]
+  (let [today (.toLocalDate (.atZone ^Instant now java.time.ZoneOffset/UTC))
+        expiration-gte (str (.plusDays today (:option-expiration-min-days config)))
+        expiration-lte (str (.plusDays today (:option-expiration-max-days config)))
+        band (policy/decimal (:option-strike-band-pct config))
+        strike-gte (double (* underlying-price (- 1M band)))
+        strike-lte (double (* underlying-price (+ 1M band)))
+        max-spread (policy/decimal (:max-adv-participation config))
+        chain (market/option-chain! (mcp-deps deps now) underlying (name option-type)
+                                     strike-gte strike-lte expiration-gte expiration-lte)
+        snapshots (get-in chain [:data :snapshots])
+        candidates (keep (fn [[occ-kw snap]]
+                            (let [occ (name occ-kw)
+                                  parsed (parse-occ-symbol occ)
+                                  ask (some-> (get-in snap [:latestQuote :ap]) policy/decimal)
+                                  bid (some-> (get-in snap [:latestQuote :bp]) policy/decimal)]
+                              (when (and parsed ask bid (pos? ask) (pos? bid))
+                                (let [mid (safe-div (+ ask bid) 2M 6 RoundingMode/HALF_UP)
+                                      spread-pct (safe-div (- ask bid) mid 6 RoundingMode/HALF_UP)]
+                                  {:symbol occ :strike (:strike parsed) :ask ask :bid bid
+                                   :spread-pct spread-pct
+                                   :distance (abs (- (:strike parsed) (policy/decimal underlying-price)))}))))
+                          snapshots)]
+    (->> candidates
+         (filter #(<= (:spread-pct %) max-spread))
+         (sort-by :distance)
+         first)))
+
 ;; SWAP POINT (now wired to horizon-blackline.intelligence/research!): thesis :direction/
 ;; :confidence come from the LLM path; a nil/hold/low-confidence thesis still yields nil here,
 ;; same as the placeholder's "no viable intent" branch -- decide-intent itself stays the only
 ;; place a candidate TradeIntent map is produced, and it still has to clear every existing gate.
-(defn decide-intent [candidate thesis account-snapshot config now]
+;;
+;; Options-only by design (hackathon core requirement: "all strategies must incorporate options
+;; trading"): a bullish thesis buys a call, a bearish thesis buys a put -- always :side :buy,
+;; never a naked/short option, so max loss is always bounded at the premium paid. Contract
+;; selection (select-option-contract!, an MCP call) happens in the caller, before this function,
+;; so decide-intent itself stays a pure function of its arguments -- same contract this function
+;; had for the stock path.
+(defn decide-intent [thesis contract config now]
   (let [direction (:direction thesis)
-        confidence (:confidence thesis)
-        side (cond (= direction "buy") :buy (= direction "sell") :sell :else nil)
-        entry (some-> (:ask-price candidate) str policy/decimal)
-        notional (policy/decimal (:order-notional-usd config))
-        quantity (when (and entry (pos? entry))
-                   (safe-div notional entry 0 RoundingMode/DOWN))
-        _ (when (and entry (pos? entry) quantity (zero? quantity))
-            (log! "no viable intent:" (:symbol candidate)
-                  "share price" entry "exceeds order notional budget" notional "-> 0 shares"))
-        stop-distance-pct (policy/decimal (:stop-distance-pct config))
-        stop (when (and entry (pos? entry) side)
-               (.setScale (if (= side :buy)
-                            (- entry (* entry stop-distance-pct))
-                            (+ entry (* entry stop-distance-pct)))
-                          2 RoundingMode/HALF_UP))]
-    (when (and side
-               (number? confidence) (>= confidence (:min-confidence config))
-               quantity (pos? quantity) stop (pos? stop))
-      {:intent-id (str (UUID/randomUUID))
-       :asset-class :stock
-       :symbol (:symbol candidate)
-       :side side
-       :order-type :limit
-       :quantity (str quantity)
-       :entry-price (str entry)
-       :stop-price (str stop)
-       :requested-risk-budget (:risk-budget config)
-       :as-of (str now)
-       :evidence-refs []})))
+        confidence (:confidence thesis)]
+    (when (and contract (#{"buy" "sell"} direction)
+               (number? confidence) (>= confidence (:min-confidence config)))
+      (let [premium (:ask contract)
+            notional (policy/decimal (:order-notional-usd config))
+            quantity (long (safe-div notional (* premium 100M) 0 RoundingMode/DOWN))]
+        (if (zero? quantity)
+          (log! "no viable intent:" (:symbol contract)
+                "premium" premium "x100 exceeds order notional budget" notional "-> 0 contracts")
+          (let [stop-loss-pct (policy/decimal (:option-stop-loss-pct config))
+                stop (.setScale (* premium (- 1M stop-loss-pct)) 2 RoundingMode/HALF_UP)]
+            {:intent-id (str (UUID/randomUUID))
+             :asset-class :option
+             :symbol (:symbol contract)
+             :side :buy
+             :order-type :limit
+             :quantity (str quantity)
+             :entry-price (str premium)
+             :stop-price (str (max stop 0.01M))
+             :requested-risk-budget (:risk-budget config)
+             :as-of (str now)
+             :evidence-refs []}))))))
 
 (defn- evidence-freshness-critic [evidence now]
   (let [valid-to (Instant/parse (:valid-to evidence))
@@ -208,11 +258,17 @@
 (defn tick-symbol! [system deps config campaign-config symbol now]
   (let [quote (market/latest-stock-quote! (mcp-deps deps now) symbol)
         candidate (:candidate (intelligence/discover quote))
-        augmented-candidate (assoc candidate :ask-price
-                                    (get-in quote [:data :quotes (keyword symbol) :ap]))
+        underlying-price (get-in quote [:data :quotes (keyword symbol) :ap])
+        augmented-candidate (assoc candidate :ask-price underlying-price)
         thesis (intelligence/research! (research-deps deps now) augmented-candidate quote)
         account (account-snapshot! deps now)
-        draft-intent (decide-intent augmented-candidate thesis account config now)]
+        option-type (cond (= (:direction thesis) "buy") :call
+                           (= (:direction thesis) "sell") :put
+                           :else nil)
+        contract (when (and option-type underlying-price (pos? (policy/decimal underlying-price)))
+                   (select-option-contract! deps now symbol option-type
+                                             (double (policy/decimal underlying-price)) config))
+        draft-intent (decide-intent thesis contract config now)]
     (if-not draft-intent
       (do (log! "no viable intent this tick" symbol) {:symbol symbol :skipped? true})
       (let [record (workflow/create-bdr! system {:run-id (str "orchestrator-" symbol "-" (UUID/randomUUID))
@@ -222,8 +278,9 @@
             intent (schema/assert-valid! schema/trade-intent (assoc draft-intent :bdr-id bdr-id))
             evidence (schema/assert-valid! schema/evidence-envelope (:evidence quote))
             bundle (policy-bundle config)
-            {:keys [snapshot valid?]} (build-risk-snapshot deps account symbol (:side intent)
-                                                            (:quantity intent) (:entry-price intent) now)
+            {:keys [snapshot valid?]} (build-risk-snapshot account (:symbol intent) (:side intent)
+                                                            (:quantity intent) (:entry-price intent)
+                                                            (:spread-pct contract) now)
             evidence-critic (evidence-freshness-critic evidence now)
             concentration-critic (concentration-awareness-critic snapshot bundle)
             risk-critic (risk-budget-critic intent bundle)
@@ -346,8 +403,16 @@
                       :requested-risk-budget (:risk-budget config)
                       :as-of (str now) :evidence-refs []})
         account (account-snapshot! deps now)
-        {:keys [snapshot valid?]} (build-risk-snapshot deps account symbol side
-                                                        (:quantity exit-intent) (str exit-price) now)
+        ;; Exits are never held for a wide spread: a breached stop is precisely when the
+        ;; contract's relative spread tends to widen (premium has shrunk toward zero), and
+        ;; blocking the closing order on liquidity would trap capital in the losing position
+        ;; instead of de-risking it. The other gates (risk budget, concentration, gross
+        ;; exposure, drawdown, frozen) still apply normally -- only the spread check is
+        ;; bypassed here, with 0 (best case) standing in for "not applicable to a de-risking
+        ;; trade".
+        {:keys [snapshot valid?]} (build-risk-snapshot account symbol side
+                                                        (:quantity exit-intent) (str exit-price)
+                                                        0M now)
         bundle (policy-bundle config)
         evaluation (policy/evaluate {:intent exit-intent :snapshot snapshot :policy bundle
                                      :frozen? (store/frozen? (:store system))
@@ -356,7 +421,7 @@
     (workflow/append! system bdr-id
                       {:event-type :EVIDENCE_CAPTURED :actor "evidence-service"
                        :payload-schema "evidence_envelope@1"
-                       :payload {:source-uri (str "alpaca://stock/latest-quote/" symbol)
+                       :payload {:source-uri (str "alpaca://option/latest-quote/" symbol)
                                  :source-type :alpaca
                                  :content-hash (str "sha256:" (bdr/sha256 (canonical/encode {:price (str exit-price)})))
                                  :observed-at (str now) :ingested-at (str now)
@@ -390,12 +455,16 @@
   (if-let [execution (orchestrator-execution system (:bdr-id record))]
     (let [intent (:intent execution)
           side (if (keyword? (:side intent)) (:side intent) (keyword (str (:side intent))))
-          quote (market/latest-stock-quote! (mcp-deps deps now) (:symbol intent))
+          quote (market/latest-option-quote! (mcp-deps deps now) (:symbol intent))
           quotes (get-in quote [:data :quotes (keyword (:symbol intent))])
+          ask (some-> (:ap quotes) str bigdec)
+          bid (some-> (:bp quotes) str bigdec)
           ;; Exiting a long means selling at the bid; exiting a short means buying back at the
           ;; ask -- checking bid for both (the original code) made the short-side stop never
-          ;; trigger correctly.
-          price (some-> (get quotes (if (= side :buy) :bp :ap)) str bigdec)
+          ;; trigger correctly. Every position here is a long option (see decide-intent), so
+          ;; this always reduces to checking the bid, but keeps the short-side branch for
+          ;; safety in case an older stock-era position is still being monitored.
+          price (if (= side :buy) bid ask)
           stop (bigdec (:stop-price intent))
           breached? (and price (if (= side :buy) (<= price stop) (>= price stop)))
           decision (if breached? :EXIT :HOLD)]

@@ -34,3 +34,22 @@
         excessive (policy/evaluate (assoc-in base-request [:snapshot :estimated-participation] "0.06"))]
     (is (some #{:LIQUIDITY_LIMIT} (:reason-codes missing)))
     (is (some #{:LIQUIDITY_LIMIT} (:reason-codes excessive)))))
+
+(deftest option-loss-at-stop-is-scaled-by-the-100-share-contract-multiplier
+  (let [stock-loss (policy/calculate-loss-at-stop
+                     {:asset-class :stock :side :buy :quantity "1" :entry-price "6.00" :stop-price "3.00"})
+        option-loss (policy/calculate-loss-at-stop
+                     {:asset-class :option :side :buy :quantity "1" :entry-price "6.00" :stop-price "3.00"})]
+    (is (= 3.00M stock-loss))
+    (is (= 300.00M option-loss))))
+
+(deftest option-risk-budget-uses-the-scaled-loss
+  (let [result (policy/evaluate
+                (-> base-request
+                    (assoc-in [:intent :asset-class] :option)
+                    (assoc-in [:intent :entry-price] "6.00")
+                    (assoc-in [:intent :stop-price] "3.00")
+                    (assoc-in [:intent :quantity] "1")))]
+    ;; 1 contract * (6.00-3.00) * 100 = $300 loss at stop, well over the $100 budget above.
+    (is (= :DENY (:result result)))
+    (is (some #{:RISK_BUDGET_EXCEEDED} (:reason-codes result)))))

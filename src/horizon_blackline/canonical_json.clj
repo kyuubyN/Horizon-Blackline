@@ -1,7 +1,7 @@
 (ns horizon-blackline.canonical-json
-  "Representação JSON pequena e determinística para conteúdo que entra no BDR.
-   Valores monetários devem chegar como strings decimais; floats são rejeitados
-   pelos schemas antes desta fronteira."
+  "Small, deterministic JSON representation for content entering the BDR.
+   Monetary values must arrive as decimal strings; floats are rejected by
+   the schemas before this boundary."
   (:require [clojure.string :as str]))
 
 (defn- escape-string [s]
