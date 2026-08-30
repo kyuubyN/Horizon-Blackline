@@ -160,4 +160,4 @@ requirement for the other commands (`bin/run-api`, `bin/rehearse-demo`, the
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Licensed under the [MIT License](LICENSE).
