@@ -157,3 +157,7 @@ requirement for the other commands (`bin/run-api`, `bin/rehearse-demo`, the
 
 > The project fails closed and has no live-trading option. Paper trading is a
 > simulation, not financial advice.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

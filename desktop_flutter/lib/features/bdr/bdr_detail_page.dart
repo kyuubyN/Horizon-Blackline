@@ -448,7 +448,7 @@ class _DecisionNarrative extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         SizedBox(
-          height: 146,
+          height: 168,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: cards.length,
