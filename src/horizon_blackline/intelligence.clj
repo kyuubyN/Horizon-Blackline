@@ -120,8 +120,15 @@
                 verification (ask-proofray! question documents)]
             (if (not= "resolved" (some-> (:state verification) str str/lower-case))
               (hold-thesis candidate "ProofRay did not resolve decision-relevant evidence.")
-              (let [bullets (mapv #(select-keys % [:text :source :relevance_score])
-                                  (:sources verification))
+              (let [;; ProofRay can return dozens of source chunks for heavily-covered symbols;
+                    ;; persisting all of them as the THESIS_RESEARCHED payload has actually
+                    ;; blown past Datomic's per-value size limit in production ("Item too
+                    ;; large"), silently dropping that tick's decision entirely. Keep only the
+                    ;; most relevant ones -- plenty for both the LLM prompt and audit provenance.
+                    bullets (->> (:sources verification)
+                                 (sort-by :relevance_score >)
+                                 (take 12)
+                                 (mapv #(select-keys % [:text :source :relevance_score])))
                     completion (complete-llm!
                                 {:system-prompt strategy-system-prompt
                                  :user-prompt (strategy-user-prompt symbol (:data quote) bullets)})
