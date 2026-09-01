@@ -345,8 +345,12 @@
   (when-let [entity (d/pull (d/db (:conn store))
                             [:campaign/id :campaign/account-id :campaign/starts-at :campaign/ends-at
                              :campaign/baseline-equity :campaign/baseline-at :campaign/autonomy-enabled?
-                             {:campaign/snapshots [:equity-snapshot/id :equity-snapshot/captured-at
-                                                   :equity-snapshot/equity :equity-snapshot/source-digest]}]
+                             ;; Datomic pull caps a cardinality-many ref at 1000 by default; past
+                             ;; that, callers that read (last snapshots) for latest equity get a
+                             ;; ~16h-stale value. Raise the cap so the whole campaign is returned.
+                             {(list 'limit :campaign/snapshots 1000000)
+                              [:equity-snapshot/id :equity-snapshot/captured-at
+                               :equity-snapshot/equity :equity-snapshot/source-digest]}]
                             [:campaign/id campaign-id])]
     {:campaign-id (:campaign/id entity)
      :account-id (:campaign/account-id entity)

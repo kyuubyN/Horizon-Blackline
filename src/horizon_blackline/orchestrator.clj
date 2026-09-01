@@ -57,6 +57,12 @@
     :hard-drawdown-limit (or (getenv "HORIZON_MAX_DRAWDOWN") "0.03")
     :order-notional-usd (or (getenv "HORIZON_ORDER_NOTIONAL_USD") "1000")
     :min-confidence (probability-double (getenv "HORIZON_MIN_CONFIDENCE") 0.6)
+    ;; A tradeable thesis (buy/sell at or above :min-confidence) must recur for the SAME symbol
+    ;; and direction this many consecutive discovery ticks before an order is proposed. The
+    ;; per-tick LLM/ProofRay judgment is noisy -- the same symbol can swing a full 0.2 in
+    ;; confidence between 5-minute ticks -- and a single spike should not open a position.
+    ;; 1 = act on the first tradeable tick (old behaviour). Streaks reset on restart.
+    :thesis-confirm-ticks (positive-long (getenv "HORIZON_THESIS_CONFIRM_TICKS") 2)
     ;; Every strategy here trades single-leg long options (buy calls for a bullish thesis, buy
     ;; puts for bearish) -- never naked/short options, so max loss is always bounded at the
     ;; premium paid. See select-option-contract!/decide-intent below.
@@ -99,6 +105,22 @@
 
 (defn- describe-exception [e]
   (str (.getSimpleName (class e)) (when-let [m (.getMessage e)] (str ": " m))))
+
+;; Per-symbol consecutive-tradeable-tick counter for the confirmation gate. Process-local: a
+;; restart clears it, so the system re-confirms before trading -- the conservative direction.
+(defonce ^:private thesis-streaks (atom {}))
+
+(defn advance-streak
+  "Pure. Given the streak so far for one symbol and this tick's thesis, return the new streak
+   {:direction dir :count n}. A tradeable thesis (buy/sell at/above min-confidence) that matches
+   the running direction increments the count; a different direction restarts it at 1; a hold or
+   sub-threshold thesis resets to {:direction nil :count 0}."
+  [streak direction confidence min-confidence]
+  (if (and (#{"buy" "sell"} direction) (number? confidence) (>= confidence min-confidence))
+    (if (= direction (:direction streak))
+      {:direction direction :count (inc (:count streak 0))}
+      {:direction direction :count 1})
+    {:direction nil :count 0}))
 
 (defn- mcp-deps [deps now] (assoc deps :now (constantly now)))
 
@@ -276,8 +298,22 @@
     (and (:web-research-enabled? config) (:fetch-web! deps))
     (assoc :fetch-web! (:fetch-web! deps))))
 
+(def ^:private open-position-states
+  "A BDR in one of these states is an in-flight or open position -- the orchestrator must not
+   open a second one for the same symbol on the next tick. Terminal states (DENIED, CANCELED,
+   REJECTED, CLOSED) and incomplete DRAFTs do not block re-entry."
+  #{:SUBMISSION_PENDING :SUBMITTED :FILLED :MONITORING :UNKNOWN})
+
+(defn- open-position-for-symbol? [system symbol]
+  (let [target (str "orchestrator-" symbol)]
+    (boolean (some #(= target (:correlation-id %))
+                   (store/list-records-by-state (:store system) (vec open-position-states))))))
+
 (defn tick-symbol! [system deps config campaign-config symbol now]
-  (let [quote (market/latest-stock-quote! (mcp-deps deps now) symbol)
+  (if (open-position-for-symbol? system symbol)
+    (do (log! "position already open this symbol; skipping entry" symbol)
+        {:symbol symbol :skipped? true :position-open? true})
+   (let [quote (market/latest-stock-quote! (mcp-deps deps now) symbol)
         candidate (:candidate (intelligence/discover quote))
         underlying-price (get-in quote [:data :quotes (keyword symbol) :ap])
         augmented-candidate (assoc candidate :ask-price underlying-price)
@@ -289,16 +325,30 @@
         contract (when (and option-type underlying-price (pos? (policy/decimal underlying-price)))
                    (select-option-contract! deps now symbol option-type
                                              (double (policy/decimal underlying-price)) config))
-        draft-intent (decide-intent thesis contract config now)]
+        draft-intent (decide-intent thesis contract config now)
+        confirm-ticks (:thesis-confirm-ticks config 1)
+        streak (get (swap! thesis-streaks update symbol advance-streak
+                           (:direction thesis) (:confidence thesis) (:min-confidence config))
+                    symbol)
+        confirmed? (>= (:count streak 0) confirm-ticks)]
     (log! "tick-diag" symbol
           "direction=" (pr-str (:direction thesis))
           "confidence=" (pr-str (:confidence thesis))
           "min-conf=" (pr-str (:min-confidence config))
+          "streak=" (str (:direction streak) "x" (:count streak 0) "/" confirm-ticks)
           "underlying-price=" (pr-str underlying-price)
           "contract=" (pr-str (some-> contract (select-keys [:symbol :ask :bid :spread-pct])))
           "reason=" (pr-str (:reasoning thesis)))
-    (if-not draft-intent
+    (cond
+      (not draft-intent)
       (do (log! "no viable intent this tick" symbol) {:symbol symbol :skipped? true})
+
+      (not confirmed?)
+      (do (log! "thesis awaiting confirmation" symbol (:direction streak)
+                (str (:count streak 0) "/" confirm-ticks))
+          {:symbol symbol :skipped? true :awaiting-confirmation? true})
+
+      :else
       (let [record (workflow/create-bdr! system {:run-id (str "orchestrator-" symbol "-" (UUID/randomUUID))
                                                   :correlation-id (str "orchestrator-" symbol)
                                                   :actor "orchestrator"})
@@ -345,7 +395,7 @@
                                            :call-tool! (:call-tool! deps)}))
                 (log! "authorized but held (autonomy/campaign gate inactive):" symbol bdr-id)))
             (log! "not authorized:" symbol bdr-id (:result evaluation) (:reason-codes evaluation)))
-          {:symbol symbol :bdr-id bdr-id :result (:result evaluation)})))))
+          {:symbol symbol :bdr-id bdr-id :result (:result evaluation)}))))))
 
 (defn tick!
   ([system config now] (tick! system (default-deps) config (campaign/config) now))

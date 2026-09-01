@@ -13,7 +13,10 @@
                                            :system (str "orchestrator-" (UUID/randomUUID))
                                            :db-name "blackline"})})
 
-(def cfg (assoc (orchestrator/config (constantly nil)) :watchlist ["AAPL"] :paper? true))
+;; :thesis-confirm-ticks 1 -> act on the first tradeable tick, so single-tick tests below
+;; exercise the trade path directly. The confirmation gate itself is covered separately.
+(def cfg (assoc (orchestrator/config (constantly nil))
+                :watchlist ["AAPL"] :paper? true :thesis-confirm-ticks 1))
 
 (def campaign-config
   {:enabled? true :autonomy-enabled? true :paper? true
@@ -232,3 +235,32 @@
 (deftest decide-intent-zero-quantity-produces-no-trade-intent
   (let [tiny-budget (assoc base-config :order-notional-usd "1")]
     (is (nil? (orchestrator/decide-intent {:direction "buy" :confidence 0.9} base-contract tiny-budget now)))))
+
+;; --- thesis confirmation gate (advance-streak) ---
+
+(deftest advance-streak-counts-consecutive-matching-tradeable-theses
+  (let [step (fn [s dir conf] (orchestrator/advance-streak s dir conf 0.5))]
+    (is (= {:direction "buy" :count 1} (step nil "buy" 0.55)))
+    (is (= {:direction "buy" :count 2} (step {:direction "buy" :count 1} "buy" 0.6)))
+    (is (= {:direction "buy" :count 3} (step {:direction "buy" :count 2} "buy" 0.9)))))
+
+(deftest advance-streak-resets-on-hold-low-confidence-or-flipped-direction
+  (let [step (fn [s dir conf] (orchestrator/advance-streak s dir conf 0.5))]
+    (is (= {:direction nil :count 0} (step {:direction "buy" :count 3} "hold" 0.9)))
+    (is (= {:direction nil :count 0} (step {:direction "buy" :count 3} "buy" 0.49)))
+    (is (= {:direction "sell" :count 1} (step {:direction "buy" :count 3} "sell" 0.8))
+        "a direction flip restarts the count at 1, it does not carry over")))
+
+(deftest confirmation-gate-holds-the-first-tradeable-tick-then-trades
+  (let [system (system)
+        calls (atom [])
+        deps (make-deps {:calls calls :direction "buy" :confidence 0.9})
+        two-tick-cfg (assoc cfg :thesis-confirm-ticks 2)]
+    (seed-campaign! system)
+    (let [t1 (orchestrator/tick! system deps two-tick-cfg campaign-config now)]
+      (is (:awaiting-confirmation? (first (:results t1))))
+      (is (empty? (store/list-records (:store system))))
+      (is (empty? @calls)))
+    (let [t2 (orchestrator/tick! system deps two-tick-cfg campaign-config now)]
+      (is (= :ALLOW (:result (first (:results t2)))))
+      (is (seq @calls)))))
