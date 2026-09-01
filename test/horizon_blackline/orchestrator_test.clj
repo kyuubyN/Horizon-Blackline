@@ -53,6 +53,10 @@
                                :created_at "2026-08-28T12:00:00Z"}]
                         direction "buy" confidence 0.9 order-status "filled"
                         option-ap "6.00" option-bp "5.90"}}]
+  ;; Tracks option contracts the mock broker "holds": a buy adds one, a sell removes it, so
+  ;; get_all_positions reflects entries/exits the way the real broker would and the
+  ;; reconcile-if-not-held path only fires when a position genuinely went missing.
+  (let [held (atom #{})]
   {:mcp-url "http://mcp.test"
    :paper-account-id "official-paper"
    :market-open! (fn [_] true)
@@ -71,7 +75,8 @@
                                    :buying_power equity :last_equity last-equity}}
         :content [{:type "text" :text "{\"id\":\"official-paper\"}"}]}
        "get_all_positions"
-       {:structuredContent {:data {:result positions}}}
+       {:structuredContent {:data {:result (concat positions
+                                                   (map (fn [s] {:symbol s :market_value "100"}) @held))}}}
        "get_news"
        {:structuredContent {:data {:news news}}}
        "get_stock_latest_quote"
@@ -87,8 +92,11 @@
        {:structuredContent {:data {:status (val-of order-status)}}}
        "place_option_order"
        (do (when calls (swap! calls conj arguments))
+           (if (= "sell" (:side arguments))
+             (swap! held disj (:symbol arguments))
+             (swap! held conj (:symbol arguments)))
            {:content [{:type "text" :text "{\"status\":\"accepted\"}"}]})
-       (throw (ex-info "unexpected tool" {:tool tool}))))})
+       (throw (ex-info "unexpected tool" {:tool tool}))))}))
 
 (deftest frozen-system-short-circuits-both-ticks
   (let [system (system)
@@ -315,3 +323,27 @@
     (orchestrator/tick-monitoring! system deps cfg campaign-config now)   ; expiry in 1d -> EXIT
     (is (= 2 (count @calls)) "an option 1 day from expiry is closed regardless of P&L")
     (is (= "sell" (:side (second @calls))))))
+
+(deftest monitored-position-closed-at-broker-is-reconciled-not-re-sold
+  (let [system (system)
+        calls (atom [])
+        ;; get_all_positions starts empty and place_option_order tracking is bypassed by
+        ;; forcing positions to always be [] -- simulates the operator closing the position
+        ;; in the broker UI while the BDR is still MONITORING.
+        base (make-deps {:calls calls})
+        deps (assoc base :call-tool!
+                    (fn [s tool args]
+                      (if (= tool "get_all_positions")
+                        {:structuredContent {:data {:result []}}}
+                        ((:call-tool! base) s tool args))))]
+    (seed-campaign! system)
+    (orchestrator/tick! system deps cfg campaign-config now)             ; entry dispatched
+    (is (= 1 (count @calls)))
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)  ; -> FILLED
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)  ; -> MONITORING
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)  ; position gone -> reconcile
+    (let [record (first (store/list-records (:store system)))]
+      (is (= :POST_MORTEM_COMPLETE (:state record)) "the phantom BDR is closed out")
+      (is (= 1 (count @calls)) "no second (phantom) sell order is ever placed")
+      (is (some #(= :POSITION_REEVALUATED (:event-type %))
+                (:events record))))))

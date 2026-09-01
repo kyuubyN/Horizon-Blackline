@@ -565,10 +565,39 @@
       took-profit?  [:EXIT "take-profit"]
       :else         [:HOLD nil])))
 
+(defn- held-broker-symbols
+  "Set of every symbol currently held at the broker (options included), or nil if the position
+   list could not be fetched. nil is deliberately not an empty set: a transient MCP failure must
+   never read as 'every position was closed'."
+  [deps now]
+  (try
+    (let [session ((:initialize! deps) (:mcp-url deps))
+          _ (when-let [lt (:list-tools! deps)] (lt session))
+          positions (get-in ((:call-tool! deps) session "get_all_positions" {})
+                            [:structuredContent :data :result])]
+      (into #{} (keep :symbol) positions))
+    (catch Exception _ nil)))
+
+(defn- reconcile-closed-externally! [system record intent]
+  (workflow/reevaluate! system (:bdr-id record)
+                        {:decision :EXIT :environment :PAPER
+                         :trigger "orchestrator:reason=closed-externally"})
+  (workflow/post-mortem! system (:bdr-id record)
+                         {:environment :PAPER
+                          :outcome (str "position " (:symbol intent) " is no longer held at the broker "
+                                        "(closed outside the orchestrator); monitoring stopped, no closing "
+                                        "order dispatched")
+                          :limitations ["Reconciliation-only close; realized P&L is whatever the external close achieved."
+                                        "Triggered by absence from get_all_positions, not by a stop/take-profit rule."]})
+  (log! "position closed externally; monitoring stopped" (:symbol intent) (:bdr-id record)))
+
 (defn- reevaluate-position! [system deps config campaign-config record now]
   (if-let [execution (orchestrator-execution system (:bdr-id record))]
-    (let [intent (:intent execution)
-          side (if (keyword? (:side intent)) (:side intent) (keyword (str (:side intent))))
+   (let [intent (:intent execution)
+         held (held-broker-symbols deps now)]
+    (if (and held (not (contains? held (:symbol intent))))
+      (reconcile-closed-externally! system record intent)
+    (let [side (if (keyword? (:side intent)) (:side intent) (keyword (str (:side intent))))
           quote (market/latest-option-quote! (mcp-deps deps now) (:symbol intent))
           quotes (get-in quote [:data :quotes (keyword (:symbol intent))])
           ask (some-> (:ap quotes) str bigdec)
@@ -606,7 +635,7 @@
                                                 "; closing-bdr=" (:bdr-id exit-result)
                                                 "; dispatched?=" (boolean (:dispatched? exit-result)))
                                   :limitations ["Deterministic rule-based exit; no discretionary judgment."
-                                                "The closing order is tracked as its own BDR, not this one."]}))))
+                                                "The closing order is tracked as its own BDR, not this one."]}))))))
     (log! "no intent found to reevaluate" (:bdr-id record))))
 
 (defn- monitor-record! [system deps config campaign-config record now]
