@@ -187,11 +187,18 @@
                                   {:symbol occ :strike (:strike parsed) :ask ask :bid bid
                                    :spread-pct spread-pct
                                    :distance (abs (- (:strike parsed) (policy/decimal underlying-price)))}))))
-                          snapshots)]
-    (->> candidates
-         (filter #(<= (:spread-pct %) max-spread))
-         (sort-by :distance)
-         first)))
+                          snapshots)
+        within-spread (filter #(<= (:spread-pct %) max-spread) candidates)
+        pick (->> within-spread (sort-by :distance) first)]
+    (log! "option-diag" underlying (name option-type)
+          "strike-window=" (str strike-gte ".." strike-lte)
+          "exp-window=" (str expiration-gte ".." expiration-lte)
+          "raw-snapshots=" (count snapshots)
+          "priced-candidates=" (count candidates)
+          "within-spread=" (count within-spread)
+          "max-spread=" (str max-spread)
+          "sample-spreads=" (pr-str (vec (take 5 (map (comp str :spread-pct) candidates)))))
+    pick))
 
 ;; SWAP POINT (now wired to horizon-blackline.intelligence/research!): thesis :direction/
 ;; :confidence come from the LLM path; a nil/hold/low-confidence thesis still yields nil here,
@@ -269,6 +276,13 @@
                    (select-option-contract! deps now symbol option-type
                                              (double (policy/decimal underlying-price)) config))
         draft-intent (decide-intent thesis contract config now)]
+    (log! "tick-diag" symbol
+          "direction=" (pr-str (:direction thesis))
+          "confidence=" (pr-str (:confidence thesis))
+          "min-conf=" (pr-str (:min-confidence config))
+          "underlying-price=" (pr-str underlying-price)
+          "contract=" (pr-str (some-> contract (select-keys [:symbol :ask :bid :spread-pct])))
+          "reason=" (pr-str (:reasoning thesis)))
     (if-not draft-intent
       (do (log! "no viable intent this tick" symbol) {:symbol symbol :skipped? true})
       (let [record (workflow/create-bdr! system {:run-id (str "orchestrator-" symbol "-" (UUID/randomUUID))
