@@ -149,27 +149,34 @@
                 verification (ask-proofray! question documents)]
             (if (not= "resolved" (some-> (:state verification) str str/lower-case))
               (hold-thesis candidate "ProofRay did not resolve decision-relevant evidence.")
-              (let [;; ProofRay can return dozens of source chunks for heavily-covered symbols;
-                    ;; persisting all of them as the THESIS_RESEARCHED payload has actually
-                    ;; blown past Datomic's per-value size limit in production ("Item too
-                    ;; large"), silently dropping that tick's decision entirely. Keep only the
-                    ;; most relevant ones -- plenty for both the LLM prompt and audit provenance.
-                    bullets (->> (:sources verification)
-                                 (sort-by :relevance_score >)
-                                 (take 12)
-                                 (mapv #(select-keys % [:text :source :relevance_score])))
+              (let [ranked (->> (:sources verification)
+                                (sort-by :relevance_score >)
+                                (take 12)
+                                (mapv #(select-keys % [:text :source :relevance_score])))
+                    ;; The LLM sees the full bullet text. What gets PERSISTED as the
+                    ;; THESIS_RESEARCHED payload is trimmed hard: web-research chunks are ~10x a
+                    ;; broker headline, and a dozen of them blew past Datomic Local's per-value
+                    ;; size limit ("Item too large"), which silently killed the whole tick.
+                    ;; 6 bullets x 240-char excerpt keeps enough provenance to audit which
+                    ;; source drove the call without risking the write.
+                    persist-bullets (->> ranked
+                                         (take 6)
+                                         (mapv (fn [b]
+                                                 {:source (:source b)
+                                                  :relevance_score (:relevance_score b)
+                                                  :excerpt (subs (str (:text b)) 0 (min 240 (count (str (:text b)))))})))
                     completion (complete-llm!
                                 {:system-prompt strategy-system-prompt
-                                 :user-prompt (strategy-user-prompt symbol (:data quote) bullets)})
+                                 :user-prompt (strategy-user-prompt symbol (:data quote) ranked)})
                     parsed (some-> completion parse-llm-json)]
                 (if-not parsed
                   (hold-thesis candidate "LLM produced no usable direction/confidence judgment.")
                   (assoc (research candidate)
                          :direction (:direction parsed)
                          :confidence (:confidence parsed)
-                         :reasoning (:reasoning parsed)
+                         :reasoning (subs (str (:reasoning parsed)) 0 (min 1200 (count (str (:reasoning parsed)))))
                          :key-risks (:key-risks parsed)
-                         :sources bullets
+                         :sources persist-bullets
                          :limitations ["LLM-assisted directional judgment; not investment advice."
                                        "A thesis alone is insufficient to authorize capital without challenge and policy evaluation."])))))))
       (catch Exception e
