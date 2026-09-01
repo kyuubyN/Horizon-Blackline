@@ -23,6 +23,7 @@ if [[ -f "$project_root/.env" ]]; then
                        HORIZON_MAX_ADV_PARTICIPATION HORIZON_MAX_DRAWDOWN HORIZON_STOP_DISTANCE_PCT \
                        HORIZON_ORDER_NOTIONAL_USD HORIZON_MIN_CONFIDENCE FEATHER_API_KEY GEMINI_API_KEY \
                        HORIZON_FEATHER_MODEL HORIZON_GEMINI_MODELS GROQ_API_KEY HORIZON_GROQ_MODEL PROOFRAY_URL \
+                       HORIZON_NEWS_MAX_AGE_DAYS HORIZON_WEB_RESEARCH_ENABLED HORIZON_DDG_MCP_URL \
                        HORIZON_API_AUTH_TOKEN; do
     if [[ -z "${!official_key:-}" ]]; then
       export "$official_key"="$(awk -F= -v key="$official_key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$project_root/.env")"
