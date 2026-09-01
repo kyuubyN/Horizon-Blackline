@@ -1,0 +1,20 @@
+[Unit]
+Description=Horizon Blackline - DuckDuckGo MCP sidecar (current open-web evidence for research)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=horizon
+WorkingDirectory=/opt/horizon-blackline
+ExecStart=/opt/horizon-blackline/bin/run-ddg-mcp
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/horizon-blackline
+
+[Install]
+WantedBy=multi-user.target

@@ -16,6 +16,7 @@
             [horizon-blackline.market :as market]
             [horizon-blackline.persistence.datomic :as store]
             [horizon-blackline.schema :as schema]
+            [horizon-blackline.web-research :as web-research]
             [horizon-blackline.workflow.core :as workflow])
   (:import (java.math RoundingMode)
            (java.time Instant Duration)
@@ -63,6 +64,13 @@
     :option-expiration-min-days (positive-long (getenv "HORIZON_OPTION_EXPIRATION_MIN_DAYS") 14)
     :option-expiration-max-days (positive-long (getenv "HORIZON_OPTION_EXPIRATION_MAX_DAYS") 45)
     :option-strike-band-pct (or (getenv "HORIZON_OPTION_STRIKE_BAND_PCT") "0.05")
+    ;; Broker-feed news older than this (days) is dropped before the LLM sees it rather than
+    ;; presented as current -- Benzinga coverage of thinly-traded / non-US tickers can lag the
+    ;; quote by months. 0 or unset disables the filter (previous behaviour).
+    :news-max-age-days (positive-long (getenv "HORIZON_NEWS_MAX_AGE_DAYS") 21)
+    ;; When true, each tick also pulls current open-web coverage (DuckDuckGo MCP sidecar) and
+    ;; feeds it through the same ProofRay -> LLM chain as broker news. Off by default.
+    :web-research-enabled? (truthy? (getenv "HORIZON_WEB_RESEARCH_ENABLED"))
     :paper? (truthy? (getenv "ALPACA_PAPER_TRADE"))}))
 
 (defn policy-bundle [config]
@@ -83,6 +91,8 @@
                                     :token (proofray/read-token!)}
                                    question documents))
    :complete-llm! llm/complete!
+   ;; Optional: only consulted when HORIZON_WEB_RESEARCH_ENABLED is true. Fails closed to [].
+   :fetch-web! (fn [symbol now] (web-research/fresh-evidence! {} symbol now))
    :market-open! market/market-open?})
 
 (defn- log! [& args] (apply println "[orchestrator]" args))
@@ -257,17 +267,21 @@
      :severity (cond (>= ratio 1M) :high (>= ratio 0.8M) :medium :else :none)
      :complete true}))
 
-(defn- research-deps [deps now]
-  {:fetch-news! (fn [symbol] (market/latest-news! (mcp-deps deps now) symbol))
-   :ask-proofray! (:ask-proofray! deps)
-   :complete-llm! (:complete-llm! deps)})
+(defn- research-deps [deps config now]
+  (cond-> {:fetch-news! (fn [symbol] (market/latest-news! (mcp-deps deps now) symbol))
+           :ask-proofray! (:ask-proofray! deps)
+           :complete-llm! (:complete-llm! deps)
+           :now now
+           :max-news-age-days (:news-max-age-days config)}
+    (and (:web-research-enabled? config) (:fetch-web! deps))
+    (assoc :fetch-web! (:fetch-web! deps))))
 
 (defn tick-symbol! [system deps config campaign-config symbol now]
   (let [quote (market/latest-stock-quote! (mcp-deps deps now) symbol)
         candidate (:candidate (intelligence/discover quote))
         underlying-price (get-in quote [:data :quotes (keyword symbol) :ap])
         augmented-candidate (assoc candidate :ask-price underlying-price)
-        thesis (intelligence/research! (research-deps deps now) augmented-candidate quote)
+        thesis (intelligence/research! (research-deps deps config now) augmented-candidate quote)
         account (account-snapshot! deps now)
         option-type (cond (= (:direction thesis) "buy") :call
                            (= (:direction thesis) "sell") :put

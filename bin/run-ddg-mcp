@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# DuckDuckGo MCP sidecar (github.com/nickclyde/duckduckgo-mcp-server) exposed over
+# streamable-HTTP for horizon-blackline.web-research. Localhost-only, no API key, read-only
+# (web search + page-text fetch). Optional: only consulted when HORIZON_WEB_RESEARCH_ENABLED=true.
+set -euo pipefail
+
+project_root=$(cd "$(dirname "$0")/.." && pwd)
+venv_dir="$project_root/.tools/ddg-mcp-venv"
+
+host="${HORIZON_DDG_MCP_HOST:-127.0.0.1}"
+port="${HORIZON_DDG_MCP_PORT:-8765}"
+
+if [[ ! -x "$venv_dir/bin/python" ]]; then
+  uv venv --python 3.12 "$venv_dir" --quiet
+  # [browser] pulls curl_cffi -> Chrome TLS impersonation, which clears most finance-site
+  # bot walls that plain httpx trips.
+  uv pip install --python "$venv_dir/bin/python" --quiet "duckduckgo-mcp-server[browser]"
+fi
+
+exec "$venv_dir/bin/duckduckgo-mcp-server" \
+  --transport streamable-http \
+  --host "$host" \
+  --port "$port" \
+  --fetch-backend auto

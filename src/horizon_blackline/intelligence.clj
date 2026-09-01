@@ -8,7 +8,8 @@
   (:require [clojure.string :as str]
             [horizon-blackline.bdr.core :as bdr]
             [horizon-blackline.canonical-json :as canonical]
-            [jsonista.core :as json]))
+            [jsonista.core :as json])
+  (:import (java.time Duration Instant)))
 
 (def ^:private mapper (json/object-mapper {:decode-key-fn keyword}))
 
@@ -46,10 +47,30 @@
 (defn- hold-thesis [candidate reason]
   (assoc (research candidate) :reasoning reason))
 
-(defn- news-documents [news-items]
+(defn- age-days
+  "Whole days between an ISO-8601 instant string and `now`, or nil if unparseable."
+  [iso now]
+  (try
+    (when (seq iso)
+      (max 0 (.toDays (Duration/between (Instant/parse iso) now))))
+    (catch Exception _ nil)))
+
+(defn- news-documents
+  "Broker-feed items as ProofRay documents. Each is stamped with its age so the LLM can
+   discount stale coverage explicitly. When max-age-days is a positive number, items older
+   than that (and items with no parseable date) are dropped rather than fed as if current --
+   for thinly-covered tickers the broker feed can be months behind the quote."
+  [news-items now max-age-days]
   (->> news-items
-       (map (fn [{:keys [headline summary source created_at]}]
-              (str/trim (str headline ". " summary " (source: " source ", " created_at ")"))))
+       (keep (fn [{:keys [headline summary source created_at]}]
+               (let [age (age-days created_at now)
+                     too-old? (and (number? max-age-days) (pos? max-age-days)
+                                   (or (nil? age) (> age max-age-days)))]
+                 (when-not too-old?
+                   (str/trim
+                    (str "[broker news, " (if age (str "~" age " day(s) old") "date unknown")
+                         "] " headline ". " summary
+                         " (source: " source ", " created_at ")"))))))
        (remove str/blank?)
        vec))
 
@@ -100,21 +121,29 @@
        :key-risks (vec (filter string? (or (:key_risks parsed) [])))})))
 
 (defn research!
-  "Full research pipeline: fetch-news! (Alpaca MCP get_news) -> ask-proofray! (deterministic
-   evidence verification over the fetched news) -> complete-llm! (direction/confidence judgment
-   over ProofRay's verified bullets). deps is {:fetch-news! (fn [symbol]) :ask-proofray! (fn
-   [question documents]) :complete-llm! (fn [request])} so every step is injectable for tests.
-   Any failure at any step -- no news, ProofRay unreachable, malformed/missing LLM JSON, a
-   'hold' verdict -- resolves to the same deterministic hold-thesis research produces; it never
-   throws, so orchestrator/decide-intent can always treat the result as 'no trade' safely."
+  "Full research pipeline: fetch-news! (Alpaca MCP get_news) [+ optional fetch-web! for current
+   open-web coverage] -> ask-proofray! (deterministic evidence verification over the combined,
+   age-labelled documents) -> complete-llm! (direction/confidence judgment over ProofRay's
+   verified bullets). deps is {:fetch-news! (fn [symbol]) :ask-proofray! (fn [question documents])
+   :complete-llm! (fn [request]) :fetch-web! (fn [symbol now] -> [{:text ...}]) :now Instant
+   :max-news-age-days long-or-nil} so every step is injectable for tests. fetch-web!, :now and
+   :max-news-age-days are optional -- omitted, the pipeline behaves exactly as the broker-news-only
+   version did. Any failure at any step -- no fresh evidence, ProofRay unreachable,
+   malformed/missing LLM JSON, a 'hold' verdict -- resolves to the same deterministic hold-thesis
+   research produces; it never throws, so orchestrator/decide-intent can always treat the result
+   as 'no trade' safely."
   [deps candidate quote]
-  (let [{:keys [fetch-news! ask-proofray! complete-llm!]} deps
+  (let [{:keys [fetch-news! ask-proofray! complete-llm! fetch-web! max-news-age-days]} deps
+        now (or (:now deps) (Instant/now))
         symbol (:symbol candidate)]
     (try
       (let [news (fetch-news! symbol)
-            documents (news-documents (:items news))]
+            news-docs (news-documents (:items news) now max-news-age-days)
+            web-docs (when fetch-web!
+                       (try (mapv :text (fetch-web! symbol now)) (catch Exception _ nil)))
+            documents (vec (concat news-docs (remove str/blank? (or web-docs []))))]
         (if (empty? documents)
-          (hold-thesis candidate "No recent news evidence available for this symbol.")
+          (hold-thesis candidate "No sufficiently fresh news or web evidence available for this symbol.")
           (let [question (str "What is the most decision-relevant recent news for " symbol
                               " and does it lean bullish, bearish, or neutral?")
                 verification (ask-proofray! question documents)]

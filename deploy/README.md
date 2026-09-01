@@ -1,7 +1,8 @@
 # Deploy to a free Linux VM
 
-Five separate systemd units, each with `Restart=on-failure` — simpler to get
-right under a deadline than a single bash supervisor. Tested against Ubuntu
+Five systemd units (plus an optional sixth, the DuckDuckGo search sidecar),
+each with `Restart=on-failure` — simpler to get right under a deadline than a
+single bash supervisor. Tested against Ubuntu
 22.04+, ARM64 (Oracle Cloud "Always Free" Ampere A1) or x86_64 (e.g. GCP
 `e2-micro`); the Clojure CLI installer script is architecture-agnostic, but
 the JDK tarball needs the right variant.
@@ -94,6 +95,21 @@ The bearer token is generated on first start and persisted at
 Clojure client (`horizon-blackline.adapters.proofray`) reads that file
 directly, nothing needs to be copied into `.env`.
 
+## 6b. DuckDuckGo search sidecar (optional — current open-web evidence)
+
+Only needed when `HORIZON_WEB_RESEARCH_ENABLED=true`. It fetches current
+open-web coverage (analyst ratings, price targets, recent headlines) to
+complement the broker news feed, whose Benzinga coverage of thinly-traded or
+non-US tickers can lag the quote by months. Results flow through the same
+ProofRay → strategy-LLM chain; if the sidecar is down the tick silently falls
+back to broker news only. No API key. `bin/run-ddg-mcp` creates its own
+virtualenv under `.tools/ddg-mcp-venv` on first run (installs the `[browser]`
+extra for Chrome-TLS impersonation, which clears most finance-site bot walls):
+
+```bash
+./bin/run-ddg-mcp   # binds 127.0.0.1:8765 by default
+```
+
 ## 7. Configuration
 
 ```bash
@@ -144,6 +160,8 @@ every systemd tested (it fell back to `/root` instead of the configured
 sudo systemctl daemon-reload
 sudo systemctl enable --now horizon-blackline-mcp.service
 sudo systemctl enable --now horizon-blackline-proofray.service
+# Optional, only with HORIZON_WEB_RESEARCH_ENABLED=true:
+sudo systemctl enable --now horizon-blackline-ddg-mcp.service
 sudo systemctl enable --now horizon-blackline-api.service
 ```
 

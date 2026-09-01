@@ -72,3 +72,54 @@
   (let [deps (assoc (news-deps) :fetch-news! (fn [_] (throw (ex-info "mcp down" {}))))
         thesis (intelligence/research! deps (candidate) sample-quote)]
     (is (= "hold" (:direction thesis)))))
+
+(def ^:private stale-news
+  [{:headline "Old earnings note" :summary "Beat, months ago." :source "wire"
+    :created_at "2026-02-01T12:00:00Z"}])
+
+(deftest research-bang-drops-broker-news-older-than-the-age-cap
+  (let [seen (atom nil)
+        deps (-> (news-deps :news stale-news)
+                 (assoc :now (java.time.Instant/parse "2026-09-01T13:00:00Z")
+                        :max-news-age-days 21
+                        :ask-proofray! (fn [_q docs] (reset! seen docs) {:state "resolved" :sources []})))
+        thesis (intelligence/research! deps (candidate) sample-quote)]
+    (is (= "hold" (:direction thesis)) "no fresh evidence -> deterministic hold")
+    (is (nil? @seen) "ProofRay is never called when every document was filtered out")))
+
+(deftest research-bang-passes-age-label-through-for-fresh-broker-news
+  (let [seen (atom nil)
+        deps (-> (news-deps)
+                 (assoc :now (java.time.Instant/parse "2026-09-01T13:00:00Z")
+                        :max-news-age-days 21
+                        :ask-proofray! (fn [_q docs] (reset! seen docs) {:state "resolved" :sources []})))]
+    (intelligence/research! deps (candidate) sample-quote)
+    (is (= 1 (count @seen)))
+    (is (re-find #"broker news, ~\d+ day" (first @seen)))))
+
+(deftest research-bang-merges-web-evidence-with-broker-news
+  (let [seen (atom nil)
+        deps (-> (news-deps)
+                 (assoc :now (java.time.Instant/parse "2026-09-01T13:00:00Z")
+                        :max-news-age-days 21
+                        :fetch-web! (fn [_symbol _now]
+                                      [{:text "[external web page ...] fresh analyst upgrade today"}])
+                        :ask-proofray! (fn [_q docs] (reset! seen docs) {:state "resolved" :sources []})))]
+    (intelligence/research! deps (candidate) sample-quote)
+    (is (= 2 (count @seen)))
+    (is (some #(re-find #"fresh analyst upgrade" %) @seen))))
+
+(deftest research-bang-uses-web-evidence-when-all-broker-news-is-stale
+  (let [deps (-> (news-deps :news stale-news :llm-response
+                            "{\"direction\":\"buy\",\"confidence\":0.7,\"reasoning\":\"web says up\",\"key_risks\":[]}")
+                 (assoc :now (java.time.Instant/parse "2026-09-01T13:00:00Z")
+                        :max-news-age-days 21
+                        :fetch-web! (fn [_symbol _now] [{:text "fresh bullish web coverage"}])))
+        thesis (intelligence/research! deps (candidate) sample-quote)]
+    (is (= "buy" (:direction thesis)))))
+
+(deftest research-bang-survives-a-throwing-web-fetch
+  (let [deps (assoc (news-deps)
+                    :fetch-web! (fn [_ _] (throw (ex-info "ddg down" {}))))
+        thesis (intelligence/research! deps (candidate) sample-quote)]
+    (is (= "buy" (:direction thesis)) "broker news alone still produces the thesis")))

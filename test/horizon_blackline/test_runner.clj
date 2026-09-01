@@ -8,8 +8,10 @@
             [horizon-blackline.campaign-test]
             [horizon-blackline.canonical-json-test]
             [horizon-blackline.datomic-test]
+            [horizon-blackline.ddg-test]
             [horizon-blackline.demo-test]
             [horizon-blackline.intelligence-test]
+            [horizon-blackline.web-research-test]
             [horizon-blackline.llm-test]
             [horizon-blackline.market-test]
             [horizon-blackline.orchestrator-test]
@@ -28,8 +30,10 @@
                                'horizon-blackline.campaign-test
                                'horizon-blackline.canonical-json-test
                                'horizon-blackline.datomic-test
+                               'horizon-blackline.ddg-test
                                'horizon-blackline.demo-test
                                'horizon-blackline.intelligence-test
+                               'horizon-blackline.web-research-test
                                'horizon-blackline.llm-test
                                'horizon-blackline.market-test
                                'horizon-blackline.orchestrator-test
