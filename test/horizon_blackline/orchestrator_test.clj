@@ -264,3 +264,54 @@
     (let [t2 (orchestrator/tick! system deps two-tick-cfg campaign-config now)]
       (is (= :ALLOW (:result (first (:results t2)))))
       (is (seq @calls)))))
+
+;; --- take-profit and expiry exits (position-exit-decision) ---
+
+(deftest exit-decision-priority-expiry-then-stop-then-take-profit
+  (let [base {:side :buy :entry-price 1M :stop 0.5M :take-profit-pct 1M :expiry-exit-days 1}]
+    (is (= [:HOLD nil]
+           (orchestrator/position-exit-decision (assoc base :price 1.2M :days-left 10))))
+    (is (= :EXIT (first (orchestrator/position-exit-decision (assoc base :price 0.4M :days-left 10))))
+        "premium at/below stop exits")
+    (is (= [:EXIT "take-profit"]
+           (orchestrator/position-exit-decision (assoc base :price 2M :days-left 10)))
+        "premium doubled (>= entry * (1 + take-profit-pct)) locks the gain")
+    (is (= [:EXIT "expiry-in-0d"]
+           (orchestrator/position-exit-decision (assoc base :price 5M :days-left 0)))
+        "expiry fires even when deep in profit")))
+
+(deftest exit-decision-take-profit-and-expiry-are-individually-disableable
+  (let [base {:side :buy :entry-price 1M :stop 0.5M :price 3M :days-left 0}]
+    (is (= [:HOLD nil]
+           (orchestrator/position-exit-decision (assoc base :take-profit-pct nil :expiry-exit-days nil)))
+        "with both rules off and price above stop, a long is held")
+    (is (= [:EXIT "take-profit"]
+           (orchestrator/position-exit-decision (assoc base :take-profit-pct 1M :expiry-exit-days nil))))))
+
+(defn- occ-expiring [underlying option-type days-out]
+  (let [d (.plusDays (java.time.LocalDate/parse "2026-08-28") days-out)
+        yy (format "%02d" (mod (.getYear d) 100))
+        mm (format "%02d" (.getMonthValue d))
+        dd (format "%02d" (.getDayOfMonth d))]
+    (str underlying yy mm dd (if (= option-type "call") "C" "P") "00100000")))
+
+(deftest monitored-position-exits-the-day-before-expiration
+  (let [system (system)
+        calls (atom [])
+        deps (-> (make-deps {:calls calls})
+                 (assoc :call-tool!
+                        (let [inner (:call-tool! (make-deps {:calls calls}))]
+                          (fn [s tool args]
+                            (if (= tool "get_option_chain")
+                              {:structuredContent
+                               {:data {:snapshots {(keyword (occ-expiring (:underlying_symbol args) (:type args) 1))
+                                                   {:latestQuote {:ap "6.00" :bp "5.90"}}}}}}
+                              (inner s tool args))))))]
+    (seed-campaign! system)
+    (orchestrator/tick! system deps cfg campaign-config now)
+    (is (= 1 (count @calls)))
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)   ; -> FILLED
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)   ; -> MONITORING
+    (orchestrator/tick-monitoring! system deps cfg campaign-config now)   ; expiry in 1d -> EXIT
+    (is (= 2 (count @calls)) "an option 1 day from expiry is closed regardless of P&L")
+    (is (= "sell" (:side (second @calls))))))

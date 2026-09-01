@@ -19,7 +19,7 @@
             [horizon-blackline.web-research :as web-research]
             [horizon-blackline.workflow.core :as workflow])
   (:import (java.math RoundingMode)
-           (java.time Instant Duration)
+           (java.time Instant Duration LocalDate ZoneOffset)
            (java.util UUID))
   (:gen-class))
 
@@ -67,6 +67,14 @@
     ;; puts for bearish) -- never naked/short options, so max loss is always bounded at the
     ;; premium paid. See select-option-contract!/decide-intent below.
     :option-stop-loss-pct (or (getenv "HORIZON_OPTION_STOP_LOSS_PCT") "0.5")
+    ;; Close a monitored long option once its premium is up this fraction over entry (1.0 =
+    ;; +100%, i.e. sell when the contract has doubled). The strategy never sells a winner
+    ;; otherwise -- it would ride a gain straight back into the stop or into expiry.
+    :option-take-profit-pct (or (getenv "HORIZON_OPTION_TAKE_PROFIT_PCT") "1.0")
+    ;; Close any monitored option this many calendar days before its expiration, regardless of
+    ;; P&L -- an option held into expiry decays to intrinsic value and then auto-exercises or
+    ;; expires worthless, neither of which this system models.
+    :option-expiry-exit-days (positive-long (getenv "HORIZON_OPTION_EXPIRY_EXIT_DAYS") 1)
     :option-expiration-min-days (positive-long (getenv "HORIZON_OPTION_EXPIRATION_MIN_DAYS") 14)
     :option-expiration-max-days (positive-long (getenv "HORIZON_OPTION_EXPIRATION_MAX_DAYS") 45)
     :option-strike-band-pct (or (getenv "HORIZON_OPTION_STRIKE_BAND_PCT") "0.05")
@@ -529,6 +537,34 @@
         (do (log! "EXIT not authorized:" symbol bdr-id (:result evaluation) (:reason-codes evaluation))
             {:bdr-id bdr-id :dispatched? false :denied? true})))))
 
+(defn- days-to-expiry
+  "Calendar days from `now` to the OCC symbol's expiration date, or nil for a non-option
+   symbol (an older stock-era position that might still be monitored)."
+  [symbol ^Instant now]
+  (when-let [exp (:expiration (parse-occ-symbol (str symbol)))]
+    (let [today (.toLocalDate (.atZone now ZoneOffset/UTC))]
+      (- (.toEpochDay (LocalDate/parse exp)) (.toEpochDay today)))))
+
+(defn position-exit-decision
+  "Pure. Decides whether a monitored long-option position should be closed this tick. Returns
+   [:EXIT reason-string] or [:HOLD nil]. Priority: expiry (fires regardless of price) > stop
+   (cut losses) > take-profit (lock a gain). take-profit-pct / expiry-exit-days nil disables
+   that rule; stop always applies."
+  [{:keys [side entry-price stop price days-left take-profit-pct expiry-exit-days]}]
+  (let [long? (not= side :sell)
+        stopped? (when (and price stop) (if long? (<= price stop) (>= price stop)))
+        took-profit? (when (and price entry-price take-profit-pct (pos? entry-price))
+                       (if long?
+                         (>= price (* entry-price (+ 1M take-profit-pct)))
+                         (<= price (* entry-price (max 0M (- 1M take-profit-pct))))))
+        expiring? (boolean (and (number? days-left) (number? expiry-exit-days)
+                                (<= days-left expiry-exit-days)))]
+    (cond
+      expiring?     [:EXIT (str "expiry-in-" days-left "d")]
+      stopped?      [:EXIT "stop-breach"]
+      took-profit?  [:EXIT "take-profit"]
+      :else         [:HOLD nil])))
+
 (defn- reevaluate-position! [system deps config campaign-config record now]
   (if-let [execution (orchestrator-execution system (:bdr-id record))]
     (let [intent (:intent execution)
@@ -544,11 +580,18 @@
           ;; safety in case an older stock-era position is still being monitored.
           price (if (= side :buy) bid ask)
           stop (bigdec (:stop-price intent))
-          breached? (and price (if (= side :buy) (<= price stop) (>= price stop)))
-          decision (if breached? :EXIT :HOLD)]
+          [decision reason] (position-exit-decision
+                             {:side side
+                              :entry-price (some-> (:entry-price intent) str bigdec)
+                              :stop stop
+                              :price price
+                              :days-left (days-to-expiry (:symbol intent) now)
+                              :take-profit-pct (some-> (:option-take-profit-pct config) str bigdec)
+                              :expiry-exit-days (:option-expiry-exit-days config)})]
       (workflow/reevaluate! system (:bdr-id record)
                             {:decision decision
-                             :trigger (str "orchestrator:price=" price ":stop=" stop)
+                             :trigger (str "orchestrator:price=" price ":stop=" stop
+                                           (when reason (str ":reason=" reason)))
                              :environment :PAPER})
       (when (= decision :EXIT)
         (let [exit-result (try
@@ -559,10 +602,10 @@
                               {:error (describe-exception e)}))]
           (workflow/post-mortem! system (:bdr-id record)
                                  {:environment :PAPER
-                                  :outcome (str "auto-exit: price " price " breached stop " stop
+                                  :outcome (str "auto-exit (" reason "): price " price " stop " stop
                                                 "; closing-bdr=" (:bdr-id exit-result)
                                                 "; dispatched?=" (boolean (:dispatched? exit-result)))
-                                  :limitations ["Deterministic stop-based exit; no discretionary judgment."
+                                  :limitations ["Deterministic rule-based exit; no discretionary judgment."
                                                 "The closing order is tracked as its own BDR, not this one."]}))))
     (log! "no intent found to reevaluate" (:bdr-id record))))
 
