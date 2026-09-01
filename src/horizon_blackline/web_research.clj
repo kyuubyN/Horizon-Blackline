@@ -29,6 +29,8 @@
    "NVDA" "Nvidia"
    "NU" "Nu Holdings Nubank"
    "BABA" "Alibaba"
+   "VALE" "Vale"
+   "PBR" "Petrobras"
    "ITUB" "Itau Unibanco"
    "BBD" "Banco Bradesco"
    "GOOGL" "Alphabet Google"
